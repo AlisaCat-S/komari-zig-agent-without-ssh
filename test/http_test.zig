@@ -13,10 +13,6 @@ test "endpoint helpers trim slash and place token query" {
         try http.basicInfoUrl(allocator, "https://panel.example/", "tok"),
     );
     try std.testing.expectEqualStrings(
-        "https://panel.example/api/clients/task/result?token=tok",
-        try http.taskResultUrl(allocator, "https://panel.example/", "tok"),
-    );
-    try std.testing.expectEqualStrings(
         "https://panel.example/api/clients/v2/rpc?token=tok",
         try http.v2RpcUrl(allocator, "https://panel.example/", "tok"),
     );
@@ -42,10 +38,6 @@ test "websocket helpers convert scheme" {
     try std.testing.expectEqualStrings(
         "wss://panel.example/api/clients/v2/rpc?token=tok",
         try http.reportWsUrlForProtocol(allocator, "https://panel.example/", "tok", 2),
-    );
-    try std.testing.expectEqualStrings(
-        "ws://panel.example/api/clients/terminal?token=tok&id=req",
-        try http.terminalWsUrl(allocator, "http://panel.example/", "tok", "req"),
     );
     try std.testing.expectEqualStrings(
         "wspanel.example/api/clients/report?token=tok",
@@ -81,23 +73,6 @@ test "cloudflare access headers are added when both values exist" {
     try std.testing.expectEqual(@as(usize, 0), http.cloudflareHeaders(config.Config{ .cf_access_client_secret = "secret" }, &raw).len);
 }
 
-test "http client shell keeps timeout tls and retry settings" {
-    const client = http.Client.init(.{
-        .timeout_ms = 30000,
-        .ignore_unsafe_cert = true,
-        .max_retries = 3,
-    });
-
-    try std.testing.expectEqual(@as(u64, 30000), client.timeout_ms);
-    try std.testing.expect(client.ignore_unsafe_cert);
-    try std.testing.expectEqual(@as(u32, 3), client.max_retries);
-    try std.testing.expect(client.shouldRetry(0, error.TemporaryNetworkFailure, null));
-    try std.testing.expect(!client.shouldRetry(3, error.TemporaryNetworkFailure, null));
-    try std.testing.expect(client.shouldRetry(0, null, 500));
-    try std.testing.expect(client.shouldRetry(0, null, 204));
-    try std.testing.expect(!client.shouldRetry(0, null, 200));
-}
-
 test "http timeout falls back to default when config omits it" {
     try std.testing.expectEqual(http.default_timeout_ms, http.timeoutMsForConfig(config.Config{}));
     try std.testing.expectEqual(@as(u64, 1234), http.timeoutMsForConfig(struct {
@@ -120,50 +95,6 @@ test "bounded response writer enforces limit while writing" {
     );
 }
 
-test "streaming response writer saves file and returns sha256" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const response =
-        "HTTP/1.1 200 OK\r\n" ++
-        "Transfer-Encoding: chunked\r\n" ++
-        "\r\n" ++
-        "5\r\nhello\r\n" ++
-        "6\r\n world\r\n" ++
-        "0\r\n\r\n";
-    const digest = blk: {
-        var file = try tmp.dir.createFile(std.testing.io, "body", .{ .read = true });
-        defer file.close(std.testing.io);
-        break :blk try http.writeResponseToFileSha256ForTest(std.testing.allocator, response, file);
-    };
-
-    var expected: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash("hello world", &expected, .{});
-    try std.testing.expectEqualSlices(u8, &expected, &digest);
-
-    const body = try tmp.dir.readFileAlloc(std.testing.io, "body", std.testing.allocator, .limited(64));
-    defer std.testing.allocator.free(body);
-    try std.testing.expectEqualStrings("hello world", body);
-}
-
-test "redirect locations resolve for release asset downloads" {
-    const absolute = try http.resolveRedirectUrlForTest(
-        std.testing.allocator,
-        "https://github.com/o/r/releases/download/v1/a",
-        "https://objects.githubusercontent.com/github-production-release-asset/x",
-    );
-    defer std.testing.allocator.free(absolute);
-    try std.testing.expectEqualStrings("https://objects.githubusercontent.com/github-production-release-asset/x", absolute);
-
-    const root_relative = try http.resolveRedirectUrlForTest(
-        std.testing.allocator,
-        "https://github.com/o/r/releases/latest/download/a",
-        "/o/r/releases/download/v1/a",
-    );
-    defer std.testing.allocator.free(root_relative);
-    try std.testing.expectEqualStrings("https://github.com/o/r/releases/download/v1/a", root_relative);
-}
-
 test "http client follows redirects when reading response bodies" {
     const responses = [_][]const u8{
         "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -177,32 +108,6 @@ test "http client follows redirects when reading response bodies" {
     const body = try http.getReadCfg(std.testing.allocator, url, config.Config{});
     defer std.testing.allocator.free(body);
 
-    try std.testing.expectEqualStrings("hello world", body);
-}
-
-test "http client follows redirects while streaming files and hashing" {
-    const responses = [_][]const u8{
-        "HTTP/1.1 302 Found\r\nLocation: /asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
-    };
-    var server = try local_http.Server.start(std.testing.allocator, &responses);
-    defer server.join() catch unreachable;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var file = try tmp.dir.createFile(std.testing.io, "asset", .{ .read = true });
-    defer file.close(std.testing.io);
-
-    const url = try server.url(std.testing.allocator, "/download");
-    defer std.testing.allocator.free(url);
-    const digest = try http.getToFileSha256Cfg(std.testing.allocator, url, config.Config{}, file);
-
-    var expected: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash("hello world", &expected, .{});
-    try std.testing.expectEqualSlices(u8, &expected, &digest);
-
-    const body = try tmp.dir.readFileAlloc(std.testing.io, "asset", std.testing.allocator, .limited(64));
-    defer std.testing.allocator.free(body);
     try std.testing.expectEqualStrings("hello world", body);
 }
 

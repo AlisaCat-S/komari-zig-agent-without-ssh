@@ -24,32 +24,6 @@ test "basic info payload matches golden json" {
     try expectJsonEqual(out.written(), @embedFile("golden/basic_info.json"));
 }
 
-test "task result payload matches golden json" {
-    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer out.deinit();
-
-    try types.writeTaskResultJson(&out.writer, .{
-        .task_id = "t1",
-        .result = "ok",
-        .exit_code = 0,
-        .finished_at = "2026-05-02T00:00:00Z",
-    });
-    try expectJsonEqual(out.written(), @embedFile("golden/task_result.json"));
-}
-
-test "ping result payload matches golden json" {
-    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer out.deinit();
-
-    try types.writePingResultJson(&out.writer, .{
-        .task_id = 9,
-        .ping_type = "tcp",
-        .value = 12,
-        .finished_at = "2026-05-02T00:00:00Z",
-    });
-    try expectJsonEqual(out.written(), @embedFile("golden/ping_result.json"));
-}
-
 test "auto discovery request matches golden json" {
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();

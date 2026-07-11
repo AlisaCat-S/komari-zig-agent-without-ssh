@@ -9,17 +9,6 @@ pub const RunOutputResult = struct {
     stdout: []u8,
 };
 
-pub const WindowsProcessHandles = struct {
-    process: windows.HANDLE,
-    thread: windows.HANDLE,
-};
-
-pub const WindowsPipedChild = struct {
-    stdin: std.Io.File,
-    stdout: std.Io.File,
-    process: WindowsProcessHandles,
-};
-
 pub fn runOutputIgnoreStderr(
     allocator: std.mem.Allocator,
     argv: []const []const u8,
@@ -62,27 +51,8 @@ pub fn runOutputWindows(allocator: std.mem.Allocator, argv: []const []const u8, 
     return runOutputWindowsImpl(allocator, argv, stdout_limit);
 }
 
-pub fn spawnWindowsPiped(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !WindowsPipedChild {
-    if (builtin.os.tag != .windows) return error.UnsupportedOs;
-    return spawnWindowsPipedImpl(allocator, argv, cwd);
-}
-
-pub fn runIgnoreOutput(argv: []const []const u8, environ_map: ?*const std.process.Environ.Map) !std.process.Child.Term {
-    const io = runtime.io();
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .environ_map = environ_map,
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    });
-    defer child.kill(io);
-    return child.wait(io);
-}
-
 const HANDLE_FLAG_INHERIT: windows.DWORD = 0x00000001;
 const INFINITE: windows.DWORD = 0xffffffff;
-const WAIT_TIMEOUT: windows.DWORD = 0x00000102;
 const WAIT_FAILED: windows.DWORD = 0xffffffff;
 const STD_INPUT_HANDLE: windows.DWORD = @bitCast(@as(i32, -10));
 
@@ -200,91 +170,6 @@ fn runOutputWindowsImpl(allocator: std.mem.Allocator, argv: []const []const u8, 
         .term = .{ .exited = child_exit },
         .stdout = try out.toOwnedSlice(),
     };
-}
-
-fn spawnWindowsPipedImpl(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !WindowsPipedChild {
-    if (argv.len == 0) return error.InvalidArgs;
-
-    const command_line = try makeWindowsCommandLine(allocator, argv);
-    defer allocator.free(command_line);
-    const cwd_w = if (cwd) |path| try std.unicode.wtf8ToWtf16LeAllocZ(allocator, path) else null;
-    defer if (cwd_w) |path| allocator.free(path);
-
-    var stdin_read_raw: windows.HANDLE = undefined;
-    var stdin_write_raw: windows.HANDLE = undefined;
-    var stdout_read_raw: windows.HANDLE = undefined;
-    var stdout_write_raw: windows.HANDLE = undefined;
-    var security = windows.SECURITY_ATTRIBUTES{
-        .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
-        .lpSecurityDescriptor = null,
-        .bInheritHandle = .TRUE,
-    };
-
-    if (CreatePipe(&stdin_read_raw, &stdin_write_raw, &security, 0) == .FALSE) return error.CommandFailed;
-    var stdin_read: ?windows.HANDLE = stdin_read_raw;
-    const stdin_write = stdin_write_raw;
-    errdefer if (stdin_read) |handle| windows.CloseHandle(handle);
-    errdefer windows.CloseHandle(stdin_write);
-
-    if (CreatePipe(&stdout_read_raw, &stdout_write_raw, &security, 0) == .FALSE) return error.CommandFailed;
-    const stdout_read = stdout_read_raw;
-    var stdout_write: ?windows.HANDLE = stdout_write_raw;
-    errdefer windows.CloseHandle(stdout_read);
-    errdefer if (stdout_write) |handle| windows.CloseHandle(handle);
-
-    if (SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.CommandFailed;
-    if (SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0) == .FALSE) return error.CommandFailed;
-
-    var startup = std.mem.zeroes(windows.STARTUPINFOW);
-    startup.cb = @sizeOf(windows.STARTUPINFOW);
-    startup.dwFlags = windows.STARTF_USESTDHANDLES;
-    startup.hStdInput = stdin_read;
-    startup.hStdOutput = stdout_write;
-    startup.hStdError = stdout_write;
-
-    var process_info = std.mem.zeroes(windows.PROCESS.INFORMATION);
-    if (windows.kernel32.CreateProcessW(
-        null,
-        command_line.ptr,
-        null,
-        null,
-        .TRUE,
-        .{ .create_no_window = true },
-        null,
-        if (cwd_w) |path| path.ptr else null,
-        &startup,
-        &process_info,
-    ) == .FALSE) return error.CommandFailed;
-
-    windows.CloseHandle(stdin_read.?);
-    stdin_read = null;
-    windows.CloseHandle(stdout_write.?);
-    stdout_write = null;
-
-    return .{
-        .stdin = .{ .handle = stdin_write, .flags = .{ .nonblocking = false } },
-        .stdout = .{ .handle = stdout_read, .flags = .{ .nonblocking = false } },
-        .process = .{ .process = process_info.hProcess, .thread = process_info.hThread },
-    };
-}
-
-pub fn waitWindowsProcess(process: windows.HANDLE, timeout_ms: u32) bool {
-    if (builtin.os.tag != .windows) return true;
-    const result = WaitForSingleObject(process, timeout_ms);
-    return result != WAIT_FAILED and result != WAIT_TIMEOUT;
-}
-
-pub fn terminateWindowsProcess(process: windows.HANDLE, exit_code: u32) void {
-    if (builtin.os.tag != .windows) return;
-    _ = TerminateProcess(process, exit_code);
-}
-
-pub fn closeWindowsProcessHandles(handles: *WindowsProcessHandles) void {
-    if (builtin.os.tag != .windows) return;
-    windows.CloseHandle(handles.thread);
-    windows.CloseHandle(handles.process);
-    handles.thread = windows.INVALID_HANDLE_VALUE;
-    handles.process = windows.INVALID_HANDLE_VALUE;
 }
 
 fn inheritedStdIn() ?windows.HANDLE {

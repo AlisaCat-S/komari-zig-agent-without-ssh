@@ -11,13 +11,10 @@ pub const Command = enum {
 pub const Config = struct {
     command: Command = .run,
     auto_discovery_key: []const u8 = "",
-    disable_auto_update: bool = false,
-    disable_web_ssh: bool = false,
     memory_mode_available: bool = false,
     token: []const u8 = "",
     endpoint: []const u8 = "",
     interval: f64 = 1.0,
-    ignore_unsafe_cert: bool = false,
     max_retries: i32 = 3,
     reconnect_interval: i32 = 5,
     info_report_interval: i32 = 5,
@@ -52,13 +49,10 @@ pub const Config = struct {
 
         const object = parsed.value.object;
         try setStringJson(allocator, object, "auto_discovery_key", &self.auto_discovery_key);
-        try setBoolJson(object, "disable_auto_update", &self.disable_auto_update);
-        try setBoolJson(object, "disable_web_ssh", &self.disable_web_ssh);
         try setBoolJson(object, "memory_mode_available", &self.memory_mode_available);
         try setStringJson(allocator, object, "token", &self.token);
         try setStringJson(allocator, object, "endpoint", &self.endpoint);
         try setFloatJson(object, "interval", &self.interval);
-        try setBoolJson(object, "ignore_unsafe_cert", &self.ignore_unsafe_cert);
         try setIntJson(object, "max_retries", &self.max_retries);
         try setIntJson(object, "reconnect_interval", &self.reconnect_interval);
         try setIntJson(object, "info_report_interval", &self.info_report_interval);
@@ -92,13 +86,10 @@ pub const Config = struct {
 
     pub fn loadEnv(self: *Config, allocator: std.mem.Allocator) !void {
         try setStringEnv(allocator, "AGENT_AUTO_DISCOVERY_KEY", &self.auto_discovery_key);
-        setBoolEnv("AGENT_DISABLE_AUTO_UPDATE", &self.disable_auto_update);
-        setBoolEnv("AGENT_DISABLE_WEB_SSH", &self.disable_web_ssh);
         setBoolEnv("AGENT_MEMORY_MODE_AVAILABLE", &self.memory_mode_available);
         try setStringEnv(allocator, "AGENT_TOKEN", &self.token);
         try setStringEnv(allocator, "AGENT_ENDPOINT", &self.endpoint);
         setFloatEnv("AGENT_INTERVAL", &self.interval);
-        setBoolEnv("AGENT_IGNORE_UNSAFE_CERT", &self.ignore_unsafe_cert);
         setIntEnv("AGENT_MAX_RETRIES", &self.max_retries);
         setIntEnv("AGENT_RECONNECT_INTERVAL", &self.reconnect_interval);
         setIntEnv("AGENT_INFO_REPORT_INTERVAL", &self.info_report_interval);
@@ -184,12 +175,6 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             cfg.custom_ipv6 = try allocator.dupe(u8, v);
         } else if (optionValue(arg, "--config")) |v| {
             cfg.config_file = try allocator.dupe(u8, v);
-        } else if (boolOptionValue(arg, "--disable-auto-update")) |v| {
-            cfg.disable_auto_update = v;
-        } else if (boolOptionValue(arg, "--disable-web-ssh")) |v| {
-            cfg.disable_web_ssh = v;
-        } else if (boolOptionValue(arg, "--ignore-unsafe-cert")) |v| {
-            cfg.ignore_unsafe_cert = v;
         } else if (boolOptionValue(arg, "--memory-include-cache")) |v| {
             cfg.memory_include_cache = v;
         } else if (boolOptionValue(arg, "--memory-exclude-bcf")) |v| {
@@ -210,14 +195,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             if (nextValue(args, &i)) |v| cfg.endpoint = try allocator.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--auto-discovery")) {
             if (nextValue(args, &i)) |v| cfg.auto_discovery_key = try allocator.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--disable-auto-update")) {
-            cfg.disable_auto_update = true;
-        } else if (std.mem.eql(u8, arg, "--disable-web-ssh")) {
-            cfg.disable_web_ssh = true;
         } else if (std.mem.eql(u8, arg, "-i") or std.mem.eql(u8, arg, "--interval")) {
             if (nextValue(args, &i)) |v| cfg.interval = try std.fmt.parseFloat(f64, v);
-        } else if (std.mem.eql(u8, arg, "-u") or std.mem.eql(u8, arg, "--ignore-unsafe-cert")) {
-            cfg.ignore_unsafe_cert = true;
         } else if (std.mem.eql(u8, arg, "-r") or std.mem.eql(u8, arg, "--max-retries")) {
             if (nextValue(args, &i)) |v| cfg.max_retries = try std.fmt.parseInt(i32, v, 10);
         } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--reconnect-interval")) {
@@ -292,9 +271,7 @@ fn nextValue(args: []const []const u8, index: *usize) ?[]const u8 {
 }
 
 fn isDeprecated(arg: []const u8) bool {
-    return std.mem.eql(u8, arg, "-autoUpdate") or
-        std.mem.eql(u8, arg, "--autoUpdate") or
-        std.mem.eql(u8, arg, "-memory-mode-available") or
+    return std.mem.eql(u8, arg, "-memory-mode-available") or
         std.mem.eql(u8, arg, "--memory-mode-available");
 }
 

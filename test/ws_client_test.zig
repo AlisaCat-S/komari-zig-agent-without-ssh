@@ -13,10 +13,10 @@ test "websocket url parser handles defaults explicit ports and ipv6" {
     try std.testing.expectEqual(@as(u16, 8443), tls.port);
     try std.testing.expect(tls.tls);
 
-    const ipv6 = try ws_client.parseUrl("wss://[2001:db8::1]/terminal");
+    const ipv6 = try ws_client.parseUrl("wss://[2001:db8::1]/reports");
     try std.testing.expectEqualStrings("2001:db8::1", ipv6.host);
     try std.testing.expectEqual(@as(u16, 443), ipv6.port);
-    try std.testing.expectEqualStrings("/terminal", ipv6.path);
+    try std.testing.expectEqualStrings("/reports", ipv6.path);
 
     const raw_ipv6 = try ws_client.parseUrl("ws://2001:db8::2/path");
     try std.testing.expectEqualStrings("2001:db8::2", raw_ipv6.host);

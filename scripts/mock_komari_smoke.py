@@ -19,13 +19,18 @@ class SmokeState:
         self.upload_seen = threading.Event()
         self.ws_seen = threading.Event()
         self.report_seen = threading.Event()
-        self.task_result_seen = threading.Event()
         self.error = None
         self.uploads = 0
         self.reports = 0
-        self.task_results = 0
-        self.task_sent = False
         self.lock = threading.Lock()
+
+
+class SmokeServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        exc_type, _, _ = sys.exc_info()
+        if exc_type in (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+        super().handle_error(request, client_address)
 
 
 def make_handler(state):
@@ -40,7 +45,8 @@ def make_handler(state):
             if parsed.path == "/api/clients/uploadBasicInfo":
                 self._handle_basic_info(parsed)
             elif parsed.path == "/api/clients/task/result":
-                self._handle_task_result(parsed)
+                state.error = "agent attempted to report a remote control task result"
+                self._send(410, b"remote control is not supported")
             else:
                 self._send(404, b"not found")
             return
@@ -66,34 +72,6 @@ def make_handler(state):
 
             state.uploads += 1
             state.upload_seen.set()
-            self._send(200, b"ok")
-
-        def _handle_task_result(self, parsed):
-            query = parse_qs(parsed.query)
-            if query.get("token", [""])[0] != state.token:
-                state.error = "unexpected task token"
-                self._send(403, b"bad token")
-                return
-
-            length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(length)
-            try:
-                payload = json.loads(body.decode("utf-8"))
-                if payload.get("task_id") != "exec-smoke":
-                    raise ValueError("unexpected task_id")
-                if payload.get("exit_code") != -1:
-                    raise ValueError("unexpected exit_code")
-                if "Remote control is disabled." not in payload.get("result", ""):
-                    raise ValueError("missing disabled remote control output")
-                if not payload.get("finished_at"):
-                    raise ValueError("missing finished_at")
-            except Exception as exc:
-                state.error = f"bad task result payload: {exc}; body={body!r}"
-                self._send(400, b"bad payload")
-                return
-
-            state.task_results += 1
-            state.task_result_seen.set()
             self._send(200, b"ok")
 
         def do_GET(self):
@@ -124,15 +102,20 @@ def make_handler(state):
             self.close_connection = True
             state.ws_seen.set()
 
-            deadline = time.monotonic() + 15
+            # A control-shaped server frame must be ignored by the monitoring-only agent.
             write_ws_frame(
                 self.wfile,
                 0x1,
-                json.dumps({"message": "exec", "task_id": "exec-smoke", "command": "printf e2e-task-ok"}).encode("utf-8"),
+                json.dumps(
+                    {
+                        "message": "exec",
+                        "task_id": "must-be-ignored",
+                        "command": "echo remote-control-should-be-ignored",
+                    }
+                ).encode("utf-8"),
             )
-            task_sent = True
-            state.task_sent = True
-            while time.monotonic() < deadline and not state.task_result_seen.is_set():
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and not state.report_seen.is_set():
                 try:
                     opcode, payload = read_ws_frame(self.connection, timeout=1.0)
                 except TimeoutError:
@@ -257,7 +240,7 @@ def main():
 
     token = "smoke-token"
     state = SmokeState(token)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
+    server = SmokeServer(("127.0.0.1", 0), make_handler(state))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -268,8 +251,6 @@ def main():
         endpoint,
         "--token",
         token,
-        "--disable-auto-update",
-        "--disable-web-ssh",
         "--protocol-version",
         str(args.protocol_version),
         "--max-retries",
@@ -285,13 +266,20 @@ def main():
     ]
 
     started = time.monotonic()
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     output_lines = []
     output_thread = threading.Thread(target=drain_output, args=(proc.stdout, output_lines), daemon=True)
     output_thread.start()
     try:
         while time.monotonic() - started < args.max_e2e_seconds:
-            if state.upload_seen.is_set() and state.report_seen.is_set() and state.task_result_seen.is_set():
+            if state.upload_seen.is_set() and state.report_seen.is_set():
                 break
             if proc.poll() is not None:
                 raise RuntimeError(f"agent exited before e2e completion, code={proc.returncode}\n{''.join(output_lines[-80:])}")
@@ -305,18 +293,12 @@ def main():
         if not state.report_seen.is_set():
             raise RuntimeError(
                 f"websocket report not seen within {args.max_e2e_seconds}s; "
-                f"ws={state.ws_seen.is_set()} reports={state.reports} task_sent={state.task_sent}\n{''.join(output_lines[-80:])}"
-            )
-        if not state.task_result_seen.is_set():
-            raise RuntimeError(
-                f"exec task result not seen within {args.max_e2e_seconds}s; "
-                f"ws={state.ws_seen.is_set()} reports={state.reports} task_sent={state.task_sent} "
-                f"task_results={state.task_results}\n{''.join(output_lines[-80:])}"
+                f"ws={state.ws_seen.is_set()} reports={state.reports}\n{''.join(output_lines[-80:])}"
             )
 
         print(
             "mock komari e2e ok: "
-            f"uploads={state.uploads}, reports={state.reports}, task_results={state.task_results}, elapsed={elapsed:.3f}s"
+            f"uploads={state.uploads}, reports={state.reports}, elapsed={elapsed:.3f}s"
         )
         return 0
     except Exception as exc:

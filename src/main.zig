@@ -8,17 +8,15 @@ const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
 const ip = @import("protocol/ip.zig");
 const netstatic = @import("report_netstatic");
-const ping = @import("protocol/ping.zig");
 const report_ws = @import("protocol/report_ws.zig");
 const v2_state = @import("protocol/v2_state.zig");
-const update = @import("update.zig");
 const version = @import("version.zig");
 const builtin = @import("builtin");
 const compat = @import("compat");
 const runtime = @import("runtime");
 const thread_stacks = @import("thread_stacks.zig");
 
-/// Agent entrypoint that wires config, reporting, updates, and shutdown.
+/// Agent entrypoint that wires config, reporting, and shutdown.
 pub const std_options: std.Options = .{
     .enable_segfault_handler = !(builtin.os.tag == .freebsd and builtin.cpu.arch == .x86),
     .unexpected_error_tracing = false,
@@ -40,8 +38,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var args_list: std.ArrayList([]const u8) = .empty;
     while (args_iter.next()) |arg| try args_list.append(config_allocator, arg);
     const args = try args_list.toOwnedSlice(config_allocator);
-
-    if (try runPingDiagnostic(allocator, args)) return;
 
     var cfg = try config.parseArgs(config_allocator, args);
     try cfg.loadEnv(config_allocator);
@@ -78,13 +74,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     if (cfg.show_warning) return;
 
-    try update.recoverPendingUpdate(allocator);
     try autodiscovery.applyExistingToken(config_allocator, &cfg);
 
     var stdout_buf: [4096]u8 = undefined;
     var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
     defer stdout.flush() catch {};
-    try stdout.print("Komari Agent {s}\nGithub Repo: {s}\n", .{ version.current, update.repo });
+    try stdout.print("Komari Agent {s}\n", .{version.current});
 
     if (cfg.endpoint.len == 0 or cfg.token.len == 0) {
         try stdout.writeAll("Usage: komari-agent --endpoint <url> --token <token>\n");
@@ -98,21 +93,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
         netstatic_active.store(true, .release);
     }
     defer if (cfg.month_rotate != 0) netstatic.stop() catch {};
-
-    if (!cfg.disable_auto_update) {
-        const has_pending_update = update.hasPendingUpdate(allocator);
-        const update_policy = update.startupUpdatePolicy(has_pending_update);
-        // The pending marker is cleared later from the report loop after the new
-        // binary successfully uploads a normal report. Do not gate the background
-        // updater on this marker, or the node gets stranded on its first updated
-        // version until an operator manually restarts it.
-        if (update_policy.run_startup_check) {
-            update.checkAndUpdate(allocator, cfg) catch |err| {
-                try stdout.print("Auto update check failed: {s}\n", .{@errorName(err)});
-            };
-        }
-        if (update_policy.start_background_loop) update.startBackground(allocator, cfg);
-    }
 
     printMonitoringLists(allocator, cfg) catch {};
 
@@ -131,18 +111,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
         _ = try runForegroundBasicInfoUpload(allocator, cfg, false, .websocket_reconnect);
     }
     try stdout.writeAll("shutting down gracefully...\n");
-}
-
-fn runPingDiagnostic(allocator: std.mem.Allocator, args: []const []const u8) !bool {
-    if (args.len < 4 or !std.mem.eql(u8, args[1], "ping-test")) return false;
-    const custom_dns = if (args.len >= 5) args[4] else "";
-    const icmp_mode = if (args.len >= 6) args[5] else "";
-    const value = ping.measureDiagnostic(allocator, args[2], args[3], custom_dns, icmp_mode);
-    var stdout_buf: [256]u8 = undefined;
-    var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
-    defer stdout.flush() catch {};
-    try stdout.print("{d}\n", .{value});
-    return true;
 }
 
 fn installSignalHandlers() void {

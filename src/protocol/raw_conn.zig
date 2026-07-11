@@ -31,11 +31,10 @@ pub const RawConn = struct {
         host: []const u8,
         port: u16,
         use_tls: bool,
-        ignore_unsafe_cert: bool,
         custom_dns: []const u8,
         timeout_ms: u64,
     ) !*RawConn {
-        return connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, .any, timeout_ms);
+        return connectWithFamily(allocator, host, port, use_tls, custom_dns, .any, timeout_ms);
     }
 
     pub fn connectWithFamily(
@@ -43,7 +42,6 @@ pub const RawConn = struct {
         host: []const u8,
         port: u16,
         use_tls: bool,
-        ignore_unsafe_cert: bool,
         custom_dns: []const u8,
         family: AddressFamily,
         timeout_ms: u64,
@@ -55,7 +53,7 @@ pub const RawConn = struct {
             if (!familyMatches(addr, family)) continue;
             var addr_buf: [96]u8 = undefined;
             debug.log("tcp connect start {s}:{d} via {s} tls={}", .{ host, port, formatAddress(&addr_buf, addr), use_tls });
-            return connectResolved(allocator, addr, host, use_tls, ignore_unsafe_cert, timeout_ms) catch |err| {
+            return connectResolved(allocator, addr, host, use_tls, timeout_ms) catch |err| {
                 last_err = err;
                 debug.log("tcp connect failed via {s}: {s}", .{ formatAddress(&addr_buf, addr), @errorName(err) });
                 continue;
@@ -69,14 +67,13 @@ pub const RawConn = struct {
         addr: net.Address,
         tls_host: []const u8,
         use_tls: bool,
-        ignore_unsafe_cert: bool,
         timeout_ms: u64,
     ) !*RawConn {
         const stream = try connectStreamAddress(addr, timeout_ms);
         errdefer net.close(stream);
         var addr_buf: [96]u8 = undefined;
         debug.log("tcp connect established via {s}", .{formatAddress(&addr_buf, addr)});
-        return fromStream(allocator, stream, tls_host, use_tls, ignore_unsafe_cert);
+        return fromStream(allocator, stream, tls_host, use_tls);
     }
 
     pub fn fromStream(
@@ -84,7 +81,6 @@ pub const RawConn = struct {
         stream: net.Stream,
         tls_host: []const u8,
         use_tls: bool,
-        ignore_unsafe_cert: bool,
     ) !*RawConn {
         const raw = try allocator.create(RawConn);
         errdefer allocator.destroy(raw);
@@ -96,54 +92,35 @@ pub const RawConn = struct {
         };
         raw.stream_reader = net.reader(raw.stream, raw.socket_read_buf[0..]);
         raw.stream_writer = net.writer(raw.stream, raw.socket_write_buf[0..]);
-        if (use_tls) try raw.startTls(tls_host, ignore_unsafe_cert);
+        if (use_tls) try raw.startTls(tls_host);
         return raw;
     }
 
-    pub fn startTls(self: *RawConn, tls_host: []const u8, ignore_unsafe_cert: bool) !void {
+    pub fn startTls(self: *RawConn, tls_host: []const u8) !void {
         if (self.tls_client != null) return error.TlsAlreadyStarted;
         if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
-        if (ignore_unsafe_cert) {
-            var random_buffer: [std.crypto.tls.Client.Options.entropy_len]u8 = undefined;
-            std.Options.debug_io.random(&random_buffer);
-            self.tls_client = std.crypto.tls.Client.init(
-                &self.stream_reader.interface,
-                &self.stream_writer.interface,
-                .{
-                    .host = .{ .explicit = tls_host },
-                    .ca = .{ .no_verification = {} },
-                    .read_buffer = self.tls_read_buf[0..],
-                    .write_buffer = self.tls_write_buf[0..],
-                    .entropy = &random_buffer,
-                    .realtime_now = std.Io.Timestamp.now(std.Options.debug_io, .real),
-                    .allow_truncation_attacks = true,
-                },
-            ) catch |err| return err;
-        } else {
-            var random_buffer: [std.crypto.tls.Client.Options.entropy_len]u8 = undefined;
-            std.Options.debug_io.random(&random_buffer);
-            var ca_bundle = try loadCaBundle();
-            defer ca_bundle.deinit(std.heap.page_allocator);
-            var ca_bundle_lock: std.Io.RwLock = .init;
-            self.tls_client = std.crypto.tls.Client.init(
-                &self.stream_reader.interface,
-                &self.stream_writer.interface,
-                .{
-                    .host = .{ .explicit = tls_host },
-                    .ca = .{ .bundle = .{
-                        .gpa = std.heap.page_allocator,
-                        .io = std.Options.debug_io,
-                        .lock = &ca_bundle_lock,
-                        .bundle = &ca_bundle,
-                    } },
-                    .read_buffer = self.tls_read_buf[0..],
-                    .write_buffer = self.tls_write_buf[0..],
-                    .entropy = &random_buffer,
-                    .realtime_now = std.Io.Timestamp.now(std.Options.debug_io, .real),
-                    .allow_truncation_attacks = true,
-                },
-            ) catch |err| return err;
-        }
+        var random_buffer: [std.crypto.tls.Client.Options.entropy_len]u8 = undefined;
+        std.Options.debug_io.random(&random_buffer);
+        var ca_bundle = try loadCaBundle();
+        defer ca_bundle.deinit(std.heap.page_allocator);
+        var ca_bundle_lock: std.Io.RwLock = .init;
+        self.tls_client = std.crypto.tls.Client.init(
+            &self.stream_reader.interface,
+            &self.stream_writer.interface,
+            .{
+                .host = .{ .explicit = tls_host },
+                .ca = .{ .bundle = .{
+                    .gpa = std.heap.page_allocator,
+                    .io = std.Options.debug_io,
+                    .lock = &ca_bundle_lock,
+                    .bundle = &ca_bundle,
+                } },
+                .read_buffer = self.tls_read_buf[0..],
+                .write_buffer = self.tls_write_buf[0..],
+                .entropy = &random_buffer,
+                .realtime_now = std.Io.Timestamp.now(std.Options.debug_io, .real),
+            },
+        ) catch |err| return err;
     }
 
     pub fn shutdown(self: *RawConn) void {

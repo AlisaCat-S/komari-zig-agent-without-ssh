@@ -20,10 +20,6 @@ pub fn io() std.Io {
     return std.Options.debug_io;
 }
 
-pub fn currentEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
-    return process_environ.createMap(allocator);
-}
-
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
     return process_environ.getAlloc(allocator, key);
 }

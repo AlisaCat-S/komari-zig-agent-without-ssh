@@ -1,0 +1,24 @@
+[Unit]
+Description=Komari monitoring agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=komari
+Group=komari
+ExecStart=/usr/local/bin/komari-agent --config /etc/komari-agent/config.json
+WorkingDirectory=/var/lib/komari-agent
+Restart=always
+RestartSec=5
+StateDirectory=komari-agent
+StateDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

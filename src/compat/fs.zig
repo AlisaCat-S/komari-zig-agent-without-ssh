@@ -71,27 +71,6 @@ pub fn openDir(path: []const u8, options: std.Io.Dir.OpenOptions) !std.Io.Dir {
     return std.Io.Dir.cwd().openDir(std.Options.debug_io, path, options);
 }
 
-pub fn renameAbsolute(old_path: []const u8, new_path: []const u8) !void {
-    return std.Io.Dir.renameAbsolute(old_path, new_path, std.Options.debug_io);
-}
-
-pub fn deleteFileAbsolute(path: []const u8) !void {
-    return std.Io.Dir.deleteFileAbsolute(std.Options.debug_io, path);
-}
-
-pub fn copyFileAbsolute(src: []const u8, dst: []const u8, permissions: ?std.Io.File.Permissions) !void {
-    return std.Io.Dir.copyFileAbsolute(src, dst, std.Options.debug_io, .{
-        .permissions = permissions,
-        .replace = true,
-    });
-}
-
-pub const private_file_permissions: std.Io.File.Permissions =
-    if (@hasDecl(std.Io.File.Permissions, "fromMode")) std.Io.File.Permissions.fromMode(0o600) else .default_file;
-
-pub const executable_file_permissions: std.Io.File.Permissions =
-    if (@hasDecl(std.Io.File.Permissions, "fromMode")) std.Io.File.Permissions.fromMode(0o755) else .executable_file;
-
 pub fn readLinkAbsolute(path: []const u8, buffer: []u8) ![]u8 {
     const n = try std.Io.Dir.readLinkAbsolute(std.Options.debug_io, path, buffer);
     return buffer[0..n];

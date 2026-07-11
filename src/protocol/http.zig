@@ -17,35 +17,6 @@ pub const Headers = struct {
     content_encoding: ?[]const u8 = null,
 };
 
-pub const ClientOptions = struct {
-    timeout_ms: u64 = default_timeout_ms,
-    ignore_unsafe_cert: bool = false,
-    max_retries: u32 = 3,
-};
-
-pub const Client = struct {
-    timeout_ms: u64,
-    ignore_unsafe_cert: bool,
-    max_retries: u32,
-    proxy_url: ?[]const u8,
-
-    pub fn init(options: ClientOptions) Client {
-        return .{
-            .timeout_ms = options.timeout_ms,
-            .ignore_unsafe_cert = options.ignore_unsafe_cert,
-            .max_retries = options.max_retries,
-            .proxy_url = null,
-        };
-    }
-
-    pub fn shouldRetry(self: Client, attempt: u32, err: ?anyerror, status: ?u16) bool {
-        if (attempt >= self.max_retries) return false;
-        if (err != null) return true;
-        if (status) |code| return code != 200;
-        return false;
-    }
-};
-
 pub const ProxyEnv = struct {
     http_proxy: ?[]const u8 = null,
     https_proxy: ?[]const u8 = null,
@@ -142,22 +113,6 @@ pub fn collectBoundedResponseForTest(allocator: std.mem.Allocator, limit: usize,
     return response_writer.toOwnedSlice();
 }
 
-pub fn writeResponseToFileSha256ForTest(allocator: std.mem.Allocator, response: []const u8, file: std.Io.File) ![32]u8 {
-    var reader: std.Io.Reader = .fixed(response);
-    const result = try readHttpBodyToFileSha256OrRedirect(allocator, file, &reader);
-    return switch (result) {
-        .ok => |digest| digest,
-        .redirect => |location| {
-            allocator.free(location);
-            return error.HttpRedirectUnexpected;
-        },
-    };
-}
-
-pub fn resolveRedirectUrlForTest(allocator: std.mem.Allocator, base_url: []const u8, location: []const u8) ![]const u8 {
-    return resolveRedirectUrl(allocator, base_url, location);
-}
-
 pub fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, cfg: anytype) !void {
     const body = try postJsonRead(allocator, url, payload, cfg);
     allocator.free(body);
@@ -226,12 +181,6 @@ pub fn getReadCfgFamily(allocator: std.mem.Allocator, url: []const u8, cfg: anyt
     return requestReadWithFamily(allocator, ascii_url, "GET", "", "", cfg, family, user_agent);
 }
 
-pub fn getToFileSha256Cfg(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) ![32]u8 {
-    const ascii_url = try idna.convertUrlToAscii(allocator, url);
-    defer allocator.free(ascii_url);
-    return requestToFileSha256(allocator, ascii_url, cfg, file);
-}
-
 pub fn trimEndpoint(endpoint: []const u8) []const u8 {
     return std.mem.trimEnd(u8, endpoint, "/");
 }
@@ -244,12 +193,6 @@ pub fn basicInfoUrl(allocator: std.mem.Allocator, endpoint: []const u8, token: [
 
 pub fn v2RpcUrl(allocator: std.mem.Allocator, endpoint: []const u8, token: []const u8) ![]const u8 {
     const raw = try std.fmt.allocPrint(allocator, "{s}/api/clients/v2/rpc?token={s}", .{ trimEndpoint(endpoint), token });
-    defer allocator.free(raw);
-    return idna.convertUrlToAscii(allocator, raw);
-}
-
-pub fn taskResultUrl(allocator: std.mem.Allocator, endpoint: []const u8, token: []const u8) ![]const u8 {
-    const raw = try std.fmt.allocPrint(allocator, "{s}/api/clients/task/result?token={s}", .{ trimEndpoint(endpoint), token });
     defer allocator.free(raw);
     return idna.convertUrlToAscii(allocator, raw);
 }
@@ -273,14 +216,6 @@ pub fn reportWsUrlForProtocol(allocator: std.mem.Allocator, endpoint: []const u8
         try std.fmt.allocPrint(allocator, "{s}/api/clients/v2/rpc?token={s}", .{ trimEndpoint(base), token })
     else
         try std.fmt.allocPrint(allocator, "{s}/api/clients/report?token={s}", .{ trimEndpoint(base), token });
-    defer allocator.free(raw);
-    return idna.convertUrlToAscii(allocator, raw);
-}
-
-pub fn terminalWsUrl(allocator: std.mem.Allocator, endpoint: []const u8, token: []const u8, id: []const u8) ![]const u8 {
-    const base = try wsEndpoint(allocator, endpoint);
-    defer allocator.free(base);
-    const raw = try std.fmt.allocPrint(allocator, "{s}/api/clients/terminal?token={s}&id={s}", .{ trimEndpoint(base), token, id });
     defer allocator.free(raw);
     return idna.convertUrlToAscii(allocator, raw);
 }
@@ -400,7 +335,6 @@ pub fn connectRawHttp(
     host: []const u8,
     port: u16,
     use_tls: bool,
-    ignore_unsafe_cert: bool,
     custom_dns: []const u8,
     family: raw_conn.AddressFamily,
     timeout_ms: u64,
@@ -411,11 +345,11 @@ pub fn connectRawHttp(
         const proxy = try parseProxyUrl(allocator, value);
         defer proxy.deinit(allocator);
         if (proxy.tls) return error.UnsupportedProxyScheme;
-        var conn = try raw_conn.RawConn.connectWithFamily(allocator, proxy.host, proxy.port, false, false, "", .any, timeout_ms);
+        var conn = try raw_conn.RawConn.connectWithFamily(allocator, proxy.host, proxy.port, false, "", .any, timeout_ms);
         errdefer conn.close();
         if (use_tls) {
             try sendConnectTunnel(allocator, conn, host, port, proxy.authorization);
-            try conn.startTls(host, ignore_unsafe_cert);
+            try conn.startTls(host);
             return .{ .conn = conn };
         }
         const authorization = if (proxy.authorization) |auth| try allocator.dupe(u8, auth) else null;
@@ -423,7 +357,7 @@ pub fn connectRawHttp(
         return .{ .conn = conn, .proxied_plain = true, .proxy_authorization = authorization };
     }
     return .{
-        .conn = try raw_conn.RawConn.connectWithFamily(allocator, host, port, use_tls, ignore_unsafe_cert, custom_dns, family, timeout_ms),
+        .conn = try raw_conn.RawConn.connectWithFamily(allocator, host, port, use_tls, custom_dns, family, timeout_ms),
     };
 }
 
@@ -500,7 +434,7 @@ fn requestReadWithFamilyHeadersOnce(
     const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
     var attempt: u32 = 0;
     while (true) : (attempt += 1) {
-        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, family, timeout_ms) catch |err| {
+        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.custom_dns, family, timeout_ms) catch |err| {
             if (attempt < max_retries) {
                 compat.sleep(2 * std.time.ns_per_s);
                 continue;
@@ -542,76 +476,6 @@ fn requestReadWithFamilyHeadersOnce(
             continue;
         }
         return error.HttpStatusNotOk;
-    }
-}
-
-fn requestToFileSha256(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File) ![32]u8 {
-    var current_url: []const u8 = try allocator.dupe(u8, url);
-    defer allocator.free(current_url);
-    var redirects: u32 = 0;
-    const timeout_ms = timeoutMsForConfig(cfg);
-    while (true) {
-        const result = try requestToFileSha256Once(allocator, current_url, cfg, file, timeout_ms);
-        switch (result) {
-            .ok => |digest| return digest,
-            .redirect => |location| {
-                defer allocator.free(location);
-                if (redirects >= max_redirects) return error.HttpTooManyRedirects;
-                const next_url = try resolveRedirectUrl(allocator, current_url, location);
-                allocator.free(current_url);
-                current_url = next_url;
-                redirects += 1;
-            },
-        }
-    }
-}
-
-fn requestToFileSha256Once(allocator: std.mem.Allocator, url: []const u8, cfg: anytype, file: std.Io.File, timeout_ms: u64) !FileFetchResult {
-    const uri = try std.Uri.parse(url);
-    const host = try uriHost(allocator, uri);
-    defer allocator.free(host);
-    const use_tls = std.mem.eql(u8, uri.scheme, "https");
-    const port: u16 = uri.port orelse if (use_tls) 443 else 80;
-    const path = try uriPathQuery(allocator, uri);
-    defer allocator.free(path);
-
-    const max_retries: u32 = if (cfg.max_retries < 0) 0 else @intCast(cfg.max_retries);
-    var attempt: u32 = 0;
-    while (true) : (attempt += 1) {
-        var reset_writer = file.writer(std.Options.debug_io, &.{});
-        try reset_writer.seekTo(0);
-        try file.setLength(std.Options.debug_io, 0);
-        const raw = connectRawHttp(allocator, uri.scheme, host, port, use_tls, cfg.ignore_unsafe_cert, cfg.custom_dns, .any, timeout_ms) catch |err| {
-            if (attempt < max_retries) {
-                compat.sleep(2 * std.time.ns_per_s);
-                continue;
-            }
-            return err;
-        };
-        var conn = raw.conn;
-        defer raw.close(allocator);
-        var req = std.Io.Writer.Allocating.init(allocator);
-        defer req.deinit();
-        const request_target = if (raw.proxied_plain) url else path;
-        try req.writer.print("GET {s} HTTP/1.1\r\nHost: {s}\r\nUser-Agent: komari-zig-agent\r\nConnection: close\r\n", .{ request_target, host });
-        if (raw.proxy_authorization) |authorization_value| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization_value});
-        try req.writer.writeAll("\r\n");
-        const request = try req.toOwnedSlice();
-        defer allocator.free(request);
-        try conn.writer().writeAll(request);
-        try conn.flush();
-
-        const result = readHttpBodyToFileSha256OrRedirect(allocator, file, conn.reader()) catch |err| {
-            if (attempt < max_retries) {
-                compat.sleep(2 * std.time.ns_per_s);
-                continue;
-            }
-            return err;
-        };
-        switch (result) {
-            .ok => return result,
-            .redirect => return result,
-        }
     }
 }
 
@@ -672,11 +536,6 @@ const HttpResponse = struct {
     }
 };
 
-const FileFetchResult = union(enum) {
-    ok: [32]u8,
-    redirect: []u8,
-};
-
 fn readHttpResponse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !HttpResponse {
     const header = try readHeader(allocator, reader);
     defer allocator.free(header);
@@ -700,59 +559,6 @@ fn readHttpResponse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !HttpR
         }
     }
     return .{ .status = status, .body = try allocator.dupe(u8, ""), .location = location };
-}
-
-fn readHttpBodyToFileSha256OrRedirect(allocator: std.mem.Allocator, file: std.Io.File, reader: *std.Io.Reader) !FileFetchResult {
-    const header = try readHeader(allocator, reader);
-    defer allocator.free(header);
-    const status = try parseStatus(header);
-    if (isRedirectStatus(status)) {
-        const location = headerValue(header, "Location") orelse return error.HttpRedirectMissingLocation;
-        return .{ .redirect = try allocator.dupe(u8, location) };
-    }
-    if (status != 200) return error.HttpStatusNotOk;
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    if (headerValue(header, "Content-Length")) |value| {
-        const len = try std.fmt.parseInt(usize, std.mem.trim(u8, value, " \t"), 10);
-        if (len > max_response_body_bytes) return error.HttpResponseTooLarge;
-        try readFixedToFileSha256(file, reader, len, &hasher);
-    } else if (headerValue(header, "Transfer-Encoding")) |value| {
-        if (std.ascii.indexOfIgnoreCase(value, "chunked") != null) {
-            try readChunkedToFileSha256(file, reader, &hasher);
-        } else {
-            try readUntilEndToFileSha256(file, reader, &hasher);
-        }
-    } else {
-        try readUntilEndToFileSha256(file, reader, &hasher);
-    }
-    var digest: [32]u8 = undefined;
-    hasher.final(&digest);
-    return .{ .ok = digest };
-}
-
-fn readFixedToFileSha256(file: std.Io.File, reader: *std.Io.Reader, len: usize, hasher: *std.crypto.hash.sha2.Sha256) !void {
-    var remaining = len;
-    var buf: [32 * 1024]u8 = undefined;
-    while (remaining != 0) {
-        const n = @min(remaining, buf.len);
-        try reader.readSliceAll(buf[0..n]);
-        try file.writeStreamingAll(std.Options.debug_io, buf[0..n]);
-        hasher.update(buf[0..n]);
-        remaining -= n;
-    }
-}
-
-fn readUntilEndToFileSha256(file: std.Io.File, reader: *std.Io.Reader, hasher: *std.crypto.hash.sha2.Sha256) !void {
-    var total: usize = 0;
-    var buf: [32 * 1024]u8 = undefined;
-    while (true) {
-        const n = try reader.readSliceShort(&buf);
-        if (n == 0) break;
-        if (n > max_response_body_bytes - total) return error.HttpResponseTooLarge;
-        try file.writeStreamingAll(std.Options.debug_io, buf[0..n]);
-        hasher.update(buf[0..n]);
-        total += n;
-    }
 }
 
 fn readHeader(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
@@ -808,26 +614,6 @@ fn readChunked(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
         if (!std.mem.eql(u8, &crlf, "\r\n")) return error.InvalidHttpResponse;
     }
     return out.toOwnedSlice(allocator);
-}
-
-fn readChunkedToFileSha256(file: std.Io.File, reader: *std.Io.Reader, hasher: *std.crypto.hash.sha2.Sha256) !void {
-    var total: usize = 0;
-    var line_buf: [128]u8 = undefined;
-    while (true) {
-        const n = try readLine(reader, &line_buf);
-        const size_text = std.mem.sliceTo(line_buf[0..n], ';');
-        const size = try std.fmt.parseInt(usize, std.mem.trim(u8, size_text, " \t"), 16);
-        if (size == 0) {
-            _ = try readLine(reader, &line_buf);
-            break;
-        }
-        if (size > max_response_body_bytes - total) return error.HttpResponseTooLarge;
-        try readFixedToFileSha256(file, reader, size, hasher);
-        total += size;
-        var crlf: [2]u8 = undefined;
-        try reader.readSliceAll(&crlf);
-        if (!std.mem.eql(u8, &crlf, "\r\n")) return error.InvalidHttpResponse;
-    }
 }
 
 fn readLine(reader: *std.Io.Reader, buf: []u8) !usize {

@@ -1,6 +1,10 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows: ["Build"]
+    types: [completed]
+    branches: [main]
   push:
     tags:
       - "v*"
@@ -20,39 +24,75 @@ env:
 
 jobs:
   prepare:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
       - name: Resolve and create tag
         id: resolve
         env:
-          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          IS_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_TAG: ${{ inputs.tag }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
         run: |
           set -eu
-          tag="${RAW_TAG#refs/tags/}"
+          case "$EVENT_NAME" in
+            workflow_run)
+              [ "$WORKFLOW_CONCLUSION" = "success" ]
+              [ "$WORKFLOW_EVENT" = "push" ]
+              [ -n "$WORKFLOW_HEAD_SHA" ]
+              tag="v0.0.0-main.${WORKFLOW_RUN_NUMBER}"
+              source_ref="$WORKFLOW_HEAD_SHA"
+              create_tag=true
+              ;;
+            workflow_dispatch)
+              tag="$MANUAL_TAG"
+              source_ref="HEAD"
+              create_tag=true
+              ;;
+            push)
+              tag="$PUSHED_TAG"
+              source_ref="$PUSHED_TAG"
+              create_tag=false
+              ;;
+            *)
+              echo "Unsupported trigger: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          tag="${tag#refs/tags/}"
           case "$tag" in
             v*) ;;
             *) tag="v${tag}" ;;
           esac
-          case "$tag" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *)
-              echo "Release tag must look like v0.1.0" >&2
-              exit 1
-              ;;
-          esac
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v0.1.0" >&2
+            exit 1
+          fi
 
-          if [ "$IS_MANUAL" = "true" ]; then
+          git fetch --tags --force
+          current="$(git rev-parse "${source_ref}^{commit}")"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "source_ref=${current}" >> "$GITHUB_OUTPUT"
+
+          if [ "$create_tag" = "true" ]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git fetch --tags --force
-            current="$(git rev-parse HEAD)"
             if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
               existing="$(git rev-list -n 1 "${tag}")"
               if [ "$existing" != "$current" ]; then
@@ -60,7 +100,7 @@ jobs:
                 exit 1
               fi
             else
-              git tag -a "$tag" -m "Release $tag"
+              git tag -a "$tag" "$current" -m "Release $tag"
               git push origin "refs/tags/${tag}"
             fi
           fi
@@ -135,7 +175,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
       - name: Install Zig
         shell: bash
         run: |
@@ -165,7 +205,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist

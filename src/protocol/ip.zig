@@ -66,7 +66,6 @@ fn getAddressFromApis(
 fn probeConfig(cfg: anytype) struct {
     timeout_ms: u64,
     max_retries: i32,
-    ignore_unsafe_cert: bool,
     custom_dns: []const u8,
     cf_access_client_id: []const u8,
     cf_access_client_secret: []const u8,
@@ -74,7 +73,6 @@ fn probeConfig(cfg: anytype) struct {
     return .{
         .timeout_ms = external_lookup_timeout_ms,
         .max_retries = external_lookup_max_retries,
-        .ignore_unsafe_cert = cfg.ignore_unsafe_cert,
         .custom_dns = cfg.custom_dns,
         .cf_access_client_id = cfg.cf_access_client_id,
         .cf_access_client_secret = cfg.cf_access_client_secret,

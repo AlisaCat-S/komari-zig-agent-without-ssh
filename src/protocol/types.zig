@@ -18,20 +18,6 @@ pub const BasicInfoPayload = struct {
     version: []const u8,
 };
 
-pub const TaskResultPayload = struct {
-    task_id: []const u8,
-    result: []const u8,
-    exit_code: i32,
-    finished_at: []const u8,
-};
-
-pub const PingResultPayload = struct {
-    task_id: u64,
-    ping_type: []const u8,
-    value: i64,
-    finished_at: []const u8,
-};
-
 pub const AutoDiscoveryRequest = struct {
     key: []const u8,
 };
@@ -97,19 +83,6 @@ pub fn writeBasicInfoJson(writer: anytype, payload: BasicInfoPayload, include_ke
     try writeField(writer, "gpu_name", payload.gpu_name, true);
     try writeField(writer, "virtualization", payload.virtualization, true);
     try writeField(writer, "version", payload.version, true);
-    try writer.writeAll("}");
-}
-
-pub fn writeTaskResultJson(writer: anytype, payload: TaskResultPayload) !void {
-    try writer.print("{f}", .{std.json.fmt(payload, .{})});
-}
-
-pub fn writePingResultJson(writer: anytype, payload: PingResultPayload) !void {
-    try writer.writeAll("{\"type\":\"ping_result\",");
-    try writeIntField(writer, "task_id", payload.task_id, false);
-    try writeField(writer, "ping_type", payload.ping_type, true);
-    try writeIntField(writer, "value", payload.value, true);
-    try writeField(writer, "finished_at", payload.finished_at, true);
     try writer.writeAll("}");
 }
 

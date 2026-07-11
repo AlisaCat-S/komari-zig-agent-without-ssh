@@ -6,19 +6,6 @@ pub fn build(b: *std.Build) void {
     const version = b.option([]const u8, "version", "agent version") orelse "0.0.1";
     const coverage = b.option(bool, "coverage", "Run tests through kcov") orelse false;
     const coverage_dir = b.option([]const u8, "coverage-dir", "kcov output directory") orelse "zig-out/coverage";
-    const zigpty_module = if (target.result.os.tag == .linux or target.result.os.tag == .macos) blk: {
-        const mod = b.createModule(.{
-            .root_source_file = b.path("src/third_party/zigpty/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        });
-        if (target.result.os.tag == .linux and target.result.abi != .musl and target.result.abi != .musleabi) {
-            mod.linkSystemLibrary("util", .{});
-        }
-        break :blk mod;
-    } else null;
-
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
     const runtime_module = b.createModule(.{
@@ -64,7 +51,6 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addOptions("build_options", opts);
     exe.root_module.addImport("runtime", runtime_module);
-    if (zigpty_module) |mod| exe.root_module.addImport("zigpty", mod);
     addCompatImports(exe.root_module, compat_module, net_module);
     exe.root_module.addImport("debug", debug_module);
     if (target.result.os.tag == .linux or target.result.os.tag == .freebsd or target.result.os.tag == .macos) {
@@ -73,12 +59,6 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .windows) {
         exe.root_module.linkSystemLibrary("advapi32", .{});
         exe.root_module.linkSystemLibrary("iphlpapi", .{});
-    }
-    if (target.result.os.tag == .linux and target.result.abi != .musl and target.result.abi != .musleabi) {
-        exe.root_module.linkSystemLibrary("util", .{});
-    }
-    if (target.result.os.tag == .freebsd) {
-        exe.root_module.linkSystemLibrary("util", .{});
     }
     const exe_idna = b.createModule(.{
         .root_source_file = b.path("src/idna.zig"),
@@ -135,26 +115,19 @@ pub fn build(b: *std.Build) void {
         "test/disk_filter_test.zig",
         "test/network_filter_test.zig",
         "test/cpu_proc_test.zig",
-        "test/task_test.zig",
-        "test/ping_test.zig",
-        "test/windows_process_test.zig",
         "test/ip_extract_test.zig",
         "test/coverage_test.zig",
-        "src/terminal_test.zig",
-        "test/ws_message_test.zig",
         "test/v2_state_test.zig",
         "test/ws_client_test.zig",
         "test/raw_conn_test.zig",
         "test/thread_stack_test.zig",
         "test/report_interval_test.zig",
         "test/netstatic_test.zig",
-        "test/update_test.zig",
     };
     for (test_paths) |test_path| {
         addTest(b, test_step, test_path, target, optimize, opts, version_module, compat_module, net_module, debug_module, coverage, coverage_dir);
     }
-    addStandaloneV2Test(b, test_step, "basic_info_v2_test.zig", target, optimize, opts, compat_module, net_module, debug_module, zigpty_module);
-    addStandaloneV2Test(b, test_step, "report_ws_v2_test.zig", target, optimize, opts, compat_module, net_module, debug_module, zigpty_module);
+    addStandaloneV2Test(b, test_step, "basic_info_v2_test.zig", target, optimize, opts, compat_module, net_module, debug_module);
 }
 
 fn addCompatImports(module: *std.Build.Module, compat_module: *std.Build.Module, net_module: *std.Build.Module) void {
@@ -253,17 +226,6 @@ fn addTest(
     protocol_raw_conn.addImport("debug", debug_module);
     protocol_raw_conn.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_raw_conn", protocol_raw_conn);
-    const update_module = b.createModule(.{
-        .root_source_file = b.path("src/update.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    addCompatImports(update_module, compat_module, net_module);
-    update_module.addImport("debug", debug_module);
-    update_module.addOptions("build_options", opts);
-    update_module.addImport("idna", idna_module);
-    update_module.addImport("dns", dns_module);
-    tests.root_module.addImport("update", update_module);
     tests.root_module.addImport("dns", dns_module);
     tests.root_module.addImport("idna", idna_module);
     tests.root_module.addImport("basic_info_flow", b.createModule(.{
@@ -280,25 +242,6 @@ fn addTest(
     platform_linux.addImport("debug", debug_module);
     platform_linux.addImport("report_netstatic", report_netstatic);
     tests.root_module.addImport("platform_linux", platform_linux);
-    const protocol_task = b.createModule(.{
-        .root_source_file = b.path("src/protocol/task.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    addCompatImports(protocol_task, compat_module, net_module);
-    protocol_task.addImport("debug", debug_module);
-    protocol_task.addImport("idna", idna_module);
-    protocol_task.addImport("dns", dns_module);
-    tests.root_module.addImport("protocol_task", protocol_task);
-    const protocol_ping = b.createModule(.{
-        .root_source_file = b.path("src/protocol/ping.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    addCompatImports(protocol_ping, compat_module, net_module);
-    protocol_ping.addImport("debug", debug_module);
-    protocol_ping.addImport("dns", dns_module);
-    tests.root_module.addImport("protocol_ping", protocol_ping);
     const protocol_ip = b.createModule(.{
         .root_source_file = b.path("src/protocol/ip.zig"),
         .target = target,
@@ -309,11 +252,6 @@ fn addTest(
     protocol_ip.addImport("idna", idna_module);
     protocol_ip.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_ip", protocol_ip);
-    tests.root_module.addImport("protocol_ws_message", b.createModule(.{
-        .root_source_file = b.path("src/protocol/ws_message.zig"),
-        .target = target,
-        .optimize = optimize,
-    }));
     tests.root_module.addImport("protocol_v2_state", b.createModule(.{
         .root_source_file = b.path("src/protocol/v2_state.zig"),
         .target = target,
@@ -370,7 +308,6 @@ fn addStandaloneV2Test(
     compat_module: *std.Build.Module,
     net_module: *std.Build.Module,
     debug_module: *std.Build.Module,
-    zigpty_module: ?*std.Build.Module,
 ) void {
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -402,7 +339,6 @@ fn addStandaloneV2Test(
     });
     addCompatImports(report_netstatic, compat_module, net_module);
     tests.root_module.addImport("report_netstatic", report_netstatic);
-    if (zigpty_module) |mod| tests.root_module.addImport("zigpty", mod);
     if (target.result.os.tag == .windows) {
         tests.root_module.linkSystemLibrary("advapi32", .{});
         tests.root_module.linkSystemLibrary("iphlpapi", .{});

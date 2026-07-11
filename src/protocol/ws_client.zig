@@ -184,7 +184,7 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     const target = try parseUrl(url);
     const scheme = if (target.tls) "wss" else "ws";
     debug.log("websocket transport connect start host={s} port={d} tls={}", .{ target.host, target.port, target.tls });
-    const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.ignore_unsafe_cert, cfg.custom_dns, http.dashboardAddressFamily(cfg), http.timeoutMsForConfig(cfg));
+    const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.custom_dns, http.dashboardAddressFamily(cfg), http.timeoutMsForConfig(cfg));
     errdefer raw_http.close(allocator);
     const raw = raw_http.conn;
     debug.log("websocket transport connected host={s} port={d}", .{ target.host, target.port });
