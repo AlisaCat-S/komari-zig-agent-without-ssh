@@ -8,7 +8,7 @@
 - 服务端下发的命令执行
 - 服务端下发的 Ping/TCP/HTTP 探测
 - 运行时自更新、二进制替换和 GitHub 代理回退
-- 网络下载安装脚本和 root 自启动安装器
+- 上游/代理下载、运行时自更新和 root 运行服务
 
 Agent 仅向配置的面板发起连接并上报监控数据。收到的服务端 WebSocket 帧会被丢弃，仅处理协议级 Ping/Pong 以保持连接；不会解析或执行面板任务。
 
@@ -20,7 +20,7 @@ Agent 仅向配置的面板发起连接并上报监控数据。收到的服务�
 zig build -Doptimize=ReleaseSmall -Dversion=dev
 ```
 
-产物位于 `zig-out/bin/komari-agent`。Agent 本身不提供自动下载或自动替换机制；发布的 Release 仅供管理员手动下载和部署。
+产物位于 `zig-out/bin/komari-agent`。Agent 运行时不提供自动下载或自动替换机制；Release 提供由管理员主动运行、并校验附件哈希的安装器。
 
 ## 下载
 
@@ -54,7 +54,96 @@ zig build -Doptimize=ReleaseSmall -Dversion=dev
 | Windows ARM64 | [komari-agent-windows-arm64.exe](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/komari-agent-windows-arm64.exe) |
 | Windows x86 | [komari-agent-windows-386.exe](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/komari-agent-windows-386.exe) |
 
-## Linux 部署
+## 安装脚本
+
+安装器支持 Linux systemd、OpenRC、Upstart、OpenWrt `procd`、FreeBSD `rc.d`、macOS 用户级 `launchd` 和 Windows。所有 Release 附件均来自本仓库：[install.sh](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.sh)、[install.ps1](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.ps1) 与 [SHA256SUMS](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/SHA256SUMS)。
+
+安装器只会从 `AlisaCat-S/komari-zig-agent-without-ssh` 的同一 GitHub Release 下载二进制、配置模板和服务定义，并校验 `SHA256SUMS`。不会访问原 fork 上游、GitHub 代理或第三方二进制服务；Agent 本身不会自动更新。
+
+Linux、FreeBSD 和 OpenWrt 需要以 root 运行安装器。Linux/FreeBSD 上取得 root shell 后，可按下面方式下载、校验并安装：
+
+```sh
+curl -fLO https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.sh
+curl -fLO https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/SHA256SUMS
+grep '  install.sh$' SHA256SUMS | sha256sum -c -
+chmod 0755 install.sh
+./install.sh
+```
+
+OpenWrt 通常自带 `uclient-fetch` 或 `wget`，无需安装 `curl`。以 root 登录后执行：
+
+```sh
+uclient-fetch -O install.sh https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.sh
+uclient-fetch -O SHA256SUMS https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/SHA256SUMS
+grep '  install.sh$' SHA256SUMS | sha256sum -c -
+chmod 0755 install.sh
+./install.sh
+```
+
+安装器会在 OpenWrt 上生成 `/etc/init.d/komari-agent`，以低权限 `komari` 用户通过 `procd` 运行，并将二进制安装到 `/usr/bin/komari-agent`。若设备没有 HTTPS 下载支持，先通过 OpenWrt 自己的软件源安装 CA/TLS 支持后再执行上述命令。
+
+macOS 必须由当前登录用户运行，不能使用 `sudo`：
+
+```sh
+curl -fLO https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.sh
+curl -fLO https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/SHA256SUMS
+grep '  install.sh$' SHA256SUMS | shasum -a 256 -c -
+chmod 0755 install.sh
+./install.sh
+```
+
+指定固定版本时，将 `KOMARI_VERSION` 设为 Release 标签：
+
+```sh
+KOMARI_VERSION=v0.1.42.1 ./install.sh
+```
+
+首次安装只创建配置和服务定义，不会启动 Agent。编辑配置中的 `endpoint` 和 `token` 后，按对应平台启用：
+
+```sh
+# systemd Linux
+sudoedit /etc/komari-agent/config.json
+sudo systemctl enable --now komari-agent
+
+# OpenRC Linux
+sudo rc-update add komari-agent default
+sudo rc-service komari-agent start
+
+# Upstart Linux
+sudo initctl start komari-agent
+
+# OpenWrt
+vi /etc/komari-agent/config.json
+/etc/init.d/komari-agent enable
+/etc/init.d/komari-agent start
+
+# FreeBSD
+sudoedit /usr/local/etc/komari-agent/config.json
+sudo sysrc komari_agent_enable=YES
+sudo service komari-agent start
+
+# macOS
+${EDITOR:-vi} "$HOME/Library/Application Support/KomariAgent/config.json"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.komari.agent.plist"
+```
+
+Linux、OpenWrt 和 FreeBSD 服务均以低权限 `komari` 用户运行；macOS 使用当前登录用户。Windows 以管理员身份打开 PowerShell 后下载并运行。脚本会创建使用 `NT AUTHORITY\LocalService` 的启动任务；首次安装后先编辑配置，再启用任务。
+
+```powershell
+Invoke-WebRequest https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.ps1 -OutFile .\install.ps1
+Invoke-WebRequest https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/SHA256SUMS -OutFile .\SHA256SUMS
+$checksumLine = Get-Content .\SHA256SUMS | Where-Object { $_ -match '\s+\*?install\.ps1$' } | Select-Object -First 1
+$expected = ($checksumLine -split '\s+')[0]
+if (-not $expected -or (Get-FileHash .\install.ps1 -Algorithm SHA256).Hash -ne $expected) { throw 'install.ps1 SHA-256 verification failed' }
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+notepad "$env:ProgramData\KomariAgent\config.json"
+Enable-ScheduledTask -TaskName 'Komari Agent'
+Start-ScheduledTask -TaskName 'Komari Agent'
+```
+
+指定版本时追加 `-Version v0.1.42.1`。
+
+## 手动 systemd 部署
 
 仓库提供 [deploy/komari-agent.service](deploy/komari-agent.service)，服务固定使用低权限账户 `komari`。管理员应先创建账户和配置，再部署已经验证过的本地二进制：
 
@@ -78,4 +167,4 @@ systemctl enable --now komari-agent
 
 - HTTPS/WSS 连接始终校验证书；请为面板配置受信任的 TLS 证书。
 - 面板地址和 Token 仍是敏感配置。请使用 HTTPS/WSS，并限制配置文件和服务管理权限。
-- 本 fork 不会从 GitHub 或任何代理下载、更新或替换自身，因此不会再被上游 Release 覆盖。
+- Agent 运行时不会从 GitHub、上游仓库或代理下载、更新或替换自身，因此不会再被上游 Release 覆盖。管理员主动运行的安装器只会从本仓库的 Release 下载并校验附件。

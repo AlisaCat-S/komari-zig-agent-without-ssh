@@ -210,6 +210,14 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Add installer and deployment files
+        run: |
+          set -eu
+          cp install.sh dist/install.sh
+          chmod 0755 dist/install.sh
+          cp install.ps1 dist/install.ps1
+          cp deploy/komari-agent.service dist/komari-agent.service
+          cp deploy/config.json.example dist/config.json.example
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -219,8 +227,8 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "$TAG" --generate-notes
           fi
-          (cd dist && sha256sum komari-agent-* > SHA256SUMS)
-          gh release upload "$TAG" dist/komari-agent-* dist/SHA256SUMS --clobber
+          (cd dist && sha256sum komari-agent-* install.sh install.ps1 komari-agent.service config.json.example > SHA256SUMS)
+          gh release upload "$TAG" dist/komari-agent-* dist/install.sh dist/install.ps1 dist/komari-agent.service dist/config.json.example dist/SHA256SUMS --clobber
 
   fanout:
     runs-on: ubuntu-latest

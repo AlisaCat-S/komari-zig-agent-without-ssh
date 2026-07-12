@@ -1,6 +1,6 @@
 # Issue #9 分析与回复草稿
 
-Issue: [ImmortalWrt 24.10.6系统中agent经常崩溃 #9](https://github.com/luodaoyi/komari-zig-agent/issues/9)
+Issue: ImmortalWrt 24.10.6系统中agent经常崩溃 #9
 
 ## 结论
 
