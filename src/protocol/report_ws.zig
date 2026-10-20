@@ -461,7 +461,12 @@ const ExecTaskArgs = struct {
 
 fn runExecTask(allocator: std.mem.Allocator, args: ExecTaskArgs) void {
     defer args.deinit(allocator);
-    task.uploadExecResult(allocator, args.cfg, v2_state.uploadProtocolVersion(), args.task_id, args.command) catch {};
+    task.uploadExecResult(allocator, args.cfg, v2_state.uploadProtocolVersion(), args.task_id, args.command) catch |err| {
+        var stdout_buf: [4096]u8 = undefined;
+        var stdout = compat.fileWriter(std.Io.File.stdout(), &stdout_buf);
+        defer stdout.flush() catch {};
+        stdout.print("Failed to upload task result: {s}\n", .{@errorName(err)}) catch {};
+    };
 }
 
 fn postV2ReportOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
