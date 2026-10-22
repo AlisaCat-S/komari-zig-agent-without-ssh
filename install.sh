@@ -9,6 +9,9 @@ readonly SERVICE_NAME="komari-agent"
 readonly SERVICE_USER="komari"
 readonly SERVICE_GROUP="komari"
 VERSION="${KOMARI_VERSION:-latest}"
+CONFIG_OVERRIDES=""
+HAS_ENDPOINT=false
+HAS_AUTH=false
 
 log() {
     printf '%s\n' "$*"
@@ -25,6 +28,213 @@ require_command() {
 
 group_exists() {
     grep -q "^${SERVICE_GROUP}:" /etc/group 2>/dev/null
+}
+
+usage() {
+    cat <<'EOF'
+Usage: install.sh [options]
+  -e, --endpoint URL          Panel endpoint
+  -t, --token TOKEN           Agent token
+  -i, --interval SECONDS      Reporting interval (> 0)
+  -r, --max-retries COUNT     Retry count (>= 0)
+  -c, --reconnect-interval N  Reconnect delay in seconds (>= 0)
+      --install-version TAG  latest or a fork release tag
+      --help                 Show this help
+Monitoring options: --info-report-interval, --protocol-version, --prefer-ip-version,
+--include-nics, --exclude-nics, --include-mountpoint, --month-rotate,
+--cf-access-client-id, --cf-access-client-secret, --custom-dns, --custom-ipv4,
+--custom-ipv6, --memory-include-cache, --memory-exclude-bcf, --disable-compression,
+--gpu, --debug-log, --get-ip-addr-from-nic. Boolean flags accept =true or =false.
+Auto-discovery, remote-control, self-update, proxy, custom install-dir/service-name options are unsupported.
+Without options, an existing config is preserved; a new install waits for manual config.
+Replacing a detected legacy agent requires confirmation on /dev/tty (default: No).
+EOF
+}
+
+json_string() {
+    JSON_VALUE="$1" awk 'BEGIN {
+        s = ENVIRON["JSON_VALUE"]; printf "\""
+        for (i = 1; i <= length(s); i++) {
+            c = substr(s, i, 1)
+            if (c == "\"" || c == "\\") printf "\\%s", c
+            else if (c == "\n") printf "\\n"
+            else if (c == "\r") printf "\\r"
+            else if (c == "\t") printf "\\t"
+            else {
+                control=0
+                for (j=1; j<32; j++) if (c == sprintf("%c",j)) { printf "\\u%04x",j; control=1; break }
+                if (!control) printf "%s", c
+            }
+        }
+        printf "\""
+    }'
+}
+
+parse_options() {
+    while [ "$#" -gt 0 ]; do
+        option=${1%%=*}
+        case "$option" in
+            -h|--help) usage; exit 0 ;;
+            --install-version) key=version; kind=string ;;
+            -e|--endpoint) key=endpoint; kind=string; HAS_ENDPOINT=true ;;
+            -t|--token) key=token; kind=string; HAS_AUTH=true ;;
+            -i|--interval) key=interval; kind=positive ;;
+            -r|--max-retries) key=max_retries; kind=integer ;;
+            -c|--reconnect-interval) key=reconnect_interval; kind=integer ;;
+            --info-report-interval) key=info_report_interval; kind=integer ;;
+            --protocol-version) key=protocol_version; kind=protocol ;;
+            --prefer-ip-version) key=prefer_ip_version; kind=ip ;;
+            --include-nics) key=include_nics; kind=string ;;
+            --exclude-nics) key=exclude_nics; kind=string ;;
+            --include-mountpoint) key=include_mountpoints; kind=string ;;
+            --month-rotate) key=month_rotate; kind=month ;;
+            --cf-access-client-id) key=cf_access_client_id; kind=string ;;
+            --cf-access-client-secret) key=cf_access_client_secret; kind=string ;;
+            --custom-dns) key=custom_dns; kind=string ;;
+            --custom-ipv4) key=custom_ipv4; kind=string ;;
+            --custom-ipv6) key=custom_ipv6; kind=string ;;
+            --memory-include-cache) key=memory_include_cache; kind=bool ;;
+            --memory-exclude-bcf) key=memory_report_raw_used; kind=bool ;;
+            --disable-compression) key=disable_compression; kind=bool ;;
+            --gpu) key=enable_gpu; kind=bool ;;
+            --debug-log) key=debug_log; kind=bool ;;
+            --get-ip-addr-from-nic) key=get_ip_addr_from_nic; kind=bool ;;
+            *) fail "unsupported option: $option (see --help)" ;;
+        esac
+        case "$1" in
+            *=*) value=${1#*=}; shift ;;
+            *)
+                shift
+                if [ "$kind" = bool ]; then value=true
+                else
+                    [ "$#" -gt 0 ] || fail "missing value for $option"
+                    case "$1" in -*) fail "missing value for $option" ;; esac
+                    value=$1; shift
+                fi ;;
+        esac
+        [ -n "$value" ] || fail "empty value for $option"
+        case "$kind" in
+            string|ip)
+                if [ "$kind" = ip ]; then
+                    case "$value" in 4|6) ;; *) fail "$option must be 4 or 6" ;; esac
+                fi
+                encoded=$(json_string "$value") ;;
+            bool)
+                case "$value" in true|false) encoded=$value ;; *) fail "$option must be true or false" ;; esac ;;
+            *)
+                case "$kind" in
+                    positive) pattern='^(0|[1-9][0-9]*)(\.[0-9]+)?$' ;;
+                    *) pattern='^(0|[1-9][0-9]*)$' ;;
+                esac
+                printf '%s' "$value" | grep -Eq "$pattern" || fail "invalid number for $option"
+                case "$kind" in
+                    positive) awk -v n="$value" 'BEGIN { exit !(n > 0 && n <= 2147483647) }' || fail "invalid interval" ;;
+                    protocol) case "$value" in 1|2) ;; *) fail "protocol version must be 1 or 2" ;; esac ;;
+                    month) [ "$value" -le 31 ] || fail "month rotation must be 0..31" ;;
+                    *) [ "$value" -le 2147483647 ] || fail "number too large for $option" ;;
+                esac
+                encoded=$value ;;
+        esac
+        if [ "$key" = version ]; then VERSION=$value
+        else
+            CONFIG_OVERRIDES="${CONFIG_OVERRIDES}${CONFIG_OVERRIDES:+,}\"${key}\":${encoded}"
+            # Explicit token authentication supersedes any old auto-discovery setting.
+            if [ "$key" = token ]; then CONFIG_OVERRIDES="${CONFIG_OVERRIDES},\"auto_discovery_key\":\"\""; fi
+        fi
+    done
+}
+
+# Split JSON object members only at top-level commas, preserving strings and nested values.
+# The config schema is flat, but unknown members are retained when options override it.
+merge_config() {
+    OVERRIDES="$CONFIG_OVERRIDES" awk '
+    function member(s, p, k) {
+        if (s ~ /^[[:space:]]*$/) return
+        p = index(s, ":"); if (!p) exit 1
+        k = substr(s, 1, p - 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
+        if (!(k in values)) keys[++count] = k
+        values[k] = substr(s, p + 1)
+    }
+    function object(s, i, c, quoted, escaped, depth, part) {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+        if (substr(s,1,1) != "{" || substr(s,length(s),1) != "}") exit 1
+        s = substr(s, 2, length(s)-2)
+        for (i=1; i<=length(s); i++) {
+            c=substr(s,i,1)
+            if (quoted) {
+                if (escaped) escaped=0
+                else if (c == "\\") escaped=1
+                else if (c == "\"") quoted=0
+            } else if (c == "\"") quoted=1
+            else if (c == "{" || c == "[") depth++
+            else if (c == "}" || c == "]") depth--
+            else if (c == "," && depth == 0) { member(part); part=""; continue }
+            part=part c
+        }
+        if (quoted || depth) exit 1
+        member(part)
+    }
+    { input=input $0 "\n" }
+    END {
+        object(input); object("{" ENVIRON["OVERRIDES"] "}")
+        print "{"
+        for (i=1; i<=count; i++) printf "  %s:%s%s\n", keys[i], values[keys[i]], (i<count ? "," : "")
+        print "}"
+    }' "$1" > "$2" || fail "cannot merge config; existing config was not changed"
+}
+
+confirm_legacy_replacement() {
+    LEGACY_BINARY=""
+    case "$OS_NAME" in
+        linux|freebsd) legacy_candidates="/opt/komari/agent /usr/local/komari/agent" ;;
+        darwin) legacy_candidates="" # macOS user path may contain spaces.
+            if [ -f "$HOME/.komari/agent" ]; then LEGACY_BINARY="$HOME/.komari/agent"; fi
+            [ ! -f /Library/LaunchDaemons/com.komari.komari-agent.plist ] ||
+                fail "uninstall the system-wide official launchd agent as root before installing the user agent"
+            ;;
+    esac
+    for candidate in $legacy_candidates; do
+        if [ -f "$candidate" ]; then
+            [ -z "$LEGACY_BINARY" ] || fail "multiple legacy agents found; uninstall them manually first"
+            LEGACY_BINARY=$candidate
+        fi
+    done
+    LEGACY_UNIT=$UNIT_PATH
+    if [ "$OS_NAME" = darwin ]; then LEGACY_UNIT="$HOME/Library/LaunchAgents/com.komari.komari-agent.plist"; fi
+    if [ -z "$LEGACY_BINARY" ] && [ ! -f "$LEGACY_UNIT" ]; then return; fi
+    # Our service always uses this config; an old same-name service is a replacement.
+    if [ -z "$LEGACY_BINARY" ] && grep -Fq -- "$CONFIG_PATH" "$LEGACY_UNIT"; then return; fi
+    log "Detected a legacy/official Komari agent. Replace it with the monitoring-only Zig agent? [y/N]"
+    answer=""
+    if ! { IFS= read -r answer </dev/tty; } 2>/dev/null; then
+        fail "replacement requires an interactive terminal; rerun from a terminal"
+    fi
+    case "$answer" in y|Y|yes|YES) REPLACE_LEGACY=true ;;
+        *) log "Cancelled; existing agent was not changed."; exit 0 ;;
+    esac
+}
+
+backup_legacy() {
+    [ "$REPLACE_LEGACY" = true ] || return 0
+    BACKUP_DIR=$(mktemp -d "${CONFIG_DIR}/previous-agent.XXXXXX")
+    [ ! -f "$LEGACY_UNIT" ] || cp -p "$LEGACY_UNIT" "$BACKUP_DIR/service"
+    [ -z "$LEGACY_BINARY" ] || cp -p "$LEGACY_BINARY" "$BACKUP_DIR/agent"
+    [ ! -f "$CONFIG_PATH" ] || cp -p "$CONFIG_PATH" "$BACKUP_DIR/config.json"
+    printf 'service=%s\nagent=%s\nconfig=%s\n' "$LEGACY_UNIT" "$LEGACY_BINARY" "$CONFIG_PATH" > "$BACKUP_DIR/restore-paths.txt"
+    log "Previous agent backup: $BACKUP_DIR (restore its service and binary to roll back)."
+}
+
+remove_legacy() {
+    [ "$REPLACE_LEGACY" = true ] || return 0
+    if [ -f "$LEGACY_UNIT" ]; then
+        case "$INIT_SYSTEM" in
+            systemd) systemctl disable "${SERVICE_NAME}.service" ;;
+            openrc) rc-update del "$SERVICE_NAME" default ;;
+            procd) "$UNIT_PATH" disable ;;
+        esac
+    fi
+    [ ! -f "$LEGACY_UNIT" ] || rm -f "$LEGACY_UNIT"
+    [ -z "$LEGACY_BINARY" ] || rm -f "$LEGACY_BINARY"
 }
 
 download() {
@@ -130,6 +340,17 @@ ensure_freebsd_account() {
 }
 
 stop_existing_service() {
+    if [ "$REPLACE_LEGACY" = true ] && [ -f "$LEGACY_UNIT" ]; then
+        case "$INIT_SYSTEM" in
+            systemd) systemctl stop "${SERVICE_NAME}.service" ;;
+            openrc) rc-service "$SERVICE_NAME" stop ;;
+            procd) "$UNIT_PATH" stop ;;
+            upstart) initctl stop "$SERVICE_NAME" ;;
+            freebsd) service "$SERVICE_NAME" stop ;;
+            launchd) launchctl bootout "gui/$(id -u)" "$LEGACY_UNIT" ;;
+        esac
+        return
+    fi
     case "$INIT_SYSTEM" in
         systemd) systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true ;;
         openrc) rc-service "$SERVICE_NAME" stop 2>/dev/null || true ;;
@@ -156,15 +377,15 @@ prepare_directories_and_config() {
         chmod 0750 "$CONFIG_DIR"
     fi
 
-    if [ "$CONFIG_EXISTED" = false ]; then
-        cp "${TEMP_DIR}/config.json.example" "$CONFIG_PATH"
-    fi
+    cp "${TEMP_DIR}/config.json" "${CONFIG_PATH}.new"
     if [ "$OS_NAME" = darwin ]; then
-        chmod 0600 "$CONFIG_PATH"
+        chmod 0600 "${CONFIG_PATH}.new"
     else
-        chown root:"$SERVICE_GROUP" "$CONFIG_PATH"
-        chmod 0640 "$CONFIG_PATH"
+        chown root:"$SERVICE_GROUP" "${CONFIG_PATH}.new"
+        chmod 0640 "${CONFIG_PATH}.new"
     fi
+    mv -f "${CONFIG_PATH}.new" "$CONFIG_PATH"
+    if [ "$HAS_ENDPOINT" = true ] && [ "$HAS_AUTH" = true ]; then CONFIG_EXISTED=true; fi
 }
 
 install_binary() {
@@ -310,8 +531,12 @@ EOF
     fi
 }
 
+# Installer entrypoint.
 require_command grep
+require_command awk
+parse_options "$@"
 select_downloader
+REPLACE_LEGACY=false
 
 case "$(uname -s)" in
     Linux)
@@ -327,8 +552,11 @@ case "$(uname -s)" in
         CONFIG_PATH="${CONFIG_DIR}/config.json"
         STATE_DIR="/var/lib/${SERVICE_NAME}"
         UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+        case "$INIT_SYSTEM" in
+            openrc|procd) UNIT_PATH="/etc/init.d/${SERVICE_NAME}" ;;
+            upstart) UNIT_PATH="/etc/init/${SERVICE_NAME}.conf" ;;
+        esac
         [ "$(id -u)" -eq 0 ] || fail "run this installer as root, for example: sudo ./install.sh"
-        ensure_linux_account
         ;;
     FreeBSD)
         OS_NAME=freebsd
@@ -339,7 +567,6 @@ case "$(uname -s)" in
         STATE_DIR="/var/db/${SERVICE_NAME}"
         UNIT_PATH="/usr/local/etc/rc.d/${SERVICE_NAME}"
         [ "$(id -u)" -eq 0 ] || fail "run this installer as root"
-        ensure_freebsd_account
         ;;
     Darwin)
         OS_NAME=darwin
@@ -353,6 +580,14 @@ case "$(uname -s)" in
         ;;
     *) fail "unsupported operating system: $(uname -s)" ;;
 esac
+
+confirm_legacy_replacement
+if [ "$HAS_ENDPOINT" != "$HAS_AUTH" ]; then
+    fail "supply --endpoint and --token together"
+fi
+if [ "$REPLACE_LEGACY" = true ] && { [ "$HAS_ENDPOINT" != true ] || [ "$HAS_AUTH" != true ]; }; then
+    fail "replacing a legacy agent requires --endpoint and --token"
+fi
 
 case "$(uname -m)" in
     x86_64|amd64) ARCH=amd64 ;;
@@ -387,7 +622,6 @@ ASSET="komari-agent-${OS_NAME}-${ARCH}"
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
 
-stop_existing_service
 download "SHA256SUMS"
 download "$ASSET"
 download "config.json.example"
@@ -398,6 +632,22 @@ if [ "$INIT_SYSTEM" = systemd ]; then
     verify "komari-agent.service"
 fi
 
+# Stage configuration before stopping anything. CLI options override only named fields.
+CONFIG_SOURCE="${TEMP_DIR}/config.json.example"
+if [ -f "$CONFIG_PATH" ]; then CONFIG_SOURCE=$CONFIG_PATH; fi
+if [ -n "$CONFIG_OVERRIDES" ]; then
+    merge_config "$CONFIG_SOURCE" "${TEMP_DIR}/config.json"
+else
+    cp "$CONFIG_SOURCE" "${TEMP_DIR}/config.json"
+fi
+case "$OS_NAME" in
+    linux) ensure_linux_account ;;
+    freebsd) ensure_freebsd_account ;;
+esac
+mkdir -p "$CONFIG_DIR"
+backup_legacy
+stop_existing_service
+remove_legacy
 prepare_directories_and_config
 install_binary
 case "$INIT_SYSTEM" in

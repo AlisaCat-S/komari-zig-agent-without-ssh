@@ -56,6 +56,32 @@ zig build -Doptimize=ReleaseSmall -Dversion=dev
 
 ## 安装脚本
 
+### 一键安装（Linux / FreeBSD）
+
+替换面板地址和 Token 后执行：
+
+```sh
+wget -qO- https://raw.githubusercontent.com/AlisaCat-S/komari-zig-agent-without-ssh/refs/heads/main/install.sh | sudo sh -s -- -e https://panel.example -t YOUR_AGENT_TOKEN
+```
+
+也可将 `wget -qO-` 换成 `curl -fsSL`；已经以 root 登录时去掉 `sudo`。macOS 使用相同命令，但必须去掉 `sudo`。管道方式直接信任仓库 `main` 上的安装脚本；如需先校验安装器，使用下方的下载、校验流程，并执行 `./install.sh -e https://panel.example -t YOUR_AGENT_TOKEN`。
+
+提供 `-e` 和 `-t` 后，脚本会写入配置并启用、启动服务。Token 不写入服务命令行；配置保留原有的其他字段。只更新监控选项时可省略 `-e`、`-t`，已有配置会继续使用。
+
+```sh
+./install.sh -e https://panel.example -t YOUR_AGENT_TOKEN -i 2 --exclude-nics 'docker*,veth*'
+./install.sh --install-version v0.1.42.1
+./install.sh --help
+```
+
+支持官方参数中的 `-e/--endpoint`、`-t/--token`、`-i/--interval`、`-r/--max-retries`、`-c/--reconnect-interval`、`--install-version` 以及 `--help` 中列出的监控参数；长参数也可用 `--参数=值`。布尔开关可使用 `=false` 关闭。不支持远程控制、自动更新、自动发现、GitHub 代理和自定义安装目录/服务名；遇到这些或其他未知参数会直接报错，不会静默忽略。
+
+脚本会检测默认官方二进制（Linux/FreeBSD 的 `/opt/komari/agent`、`/usr/local/komari/agent`，macOS 当前用户的 `~/.komari/agent`）和同名旧服务。检测到后会通过终端询问是否卸载替换，默认拒绝；管道安装也可正常回答。没有交互终端时拒绝替换。自定义名称的旧服务须先手动卸载；macOS 系统级官方服务须先由管理员卸载。
+
+确认替换时必须提供 `-e` 和 `-t`。新文件全部下载、校验成功后，脚本才备份并停止旧服务、移除旧服务定义和检测到的默认二进制，再安装 Zig Agent。备份保存在配置目录下的 `previous-agent.*`，旧安装目录中的其他文件保留。若需回滚，停止新服务，按备份中 `restore-paths.txt` 记录的路径恢复 `service` 和 `agent`，并通过原服务管理器重新启用；已有配置同时备份为 `config.json`。
+
+### 下载并校验安装器
+
 安装器支持 Linux systemd、OpenRC、Upstart、OpenWrt `procd`、FreeBSD `rc.d`、macOS 用户级 `launchd` 和 Windows。所有 Release 附件均来自本仓库：[install.sh](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.sh)、[install.ps1](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.ps1) 与 [SHA256SUMS](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/SHA256SUMS)。
 
 安装器只会从 `AlisaCat-S/komari-zig-agent-without-ssh` 的同一 GitHub Release 下载二进制、配置模板和服务定义，并校验 `SHA256SUMS`。不会访问原 fork 上游、GitHub 代理或第三方二进制服务；Agent 本身不会自动更新。
@@ -98,7 +124,7 @@ chmod 0755 install.sh
 KOMARI_VERSION=v0.1.42.1 ./install.sh
 ```
 
-首次安装只创建配置和服务定义，不会启动 Agent。编辑配置中的 `endpoint` 和 `token` 后，按对应平台启用：
+未提供 `-e`、`-t` 的首次安装只创建配置和服务定义，不会启动 Agent。编辑配置中的 `endpoint` 和 `token` 后，按对应平台启用：
 
 ```sh
 # systemd Linux
