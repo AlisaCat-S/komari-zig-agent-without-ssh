@@ -14,6 +14,7 @@ const thread_stacks = @import("../thread_stacks.zig");
 
 /// Outbound monitoring reports. Server-originated frames are discarded.
 const report_stack_buffer_size = 4096;
+pub const heartbeat_interval_ms: u64 = 10_000;
 
 fn snapshotOptions(cfg: config.Config) common.SnapshotOptions {
     return .{
@@ -113,34 +114,21 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
             try stdout.print("WebSocket connect failed: {s}\n", .{@errorName(err)});
             return err;
         };
-        startDiscardReader(allocator, ws);
-        var last_heartbeat = compat.unixTimestamp();
-        var closed = false;
+        defer ws.close(allocator);
+        defer v2_state.resetConnectionProtocolVersion();
+        try startDiscardReader(allocator, ws);
+        try startHeartbeat(allocator, ws);
 
         while (!isStopRequested(stop_requested)) {
             const report_start_ms = compat.milliTimestamp();
-            const now = compat.unixTimestamp();
-            if (now - last_heartbeat >= 30) {
-                ws.writePing() catch |err| {
-                    try stdout.print("Failed to send heartbeat: {s}\n", .{@errorName(err)});
-                    ws.close(allocator);
-                    v2_state.resetConnectionProtocolVersion();
-                    closed = true;
-                    break;
-                };
-                last_heartbeat = now;
-            }
             writeReportOnce(allocator, ws, cfg) catch |err| {
                 try stdout.print("WebSocket write failed: {s}\n", .{@errorName(err)});
-                ws.close(allocator);
-                v2_state.resetConnectionProtocolVersion();
-                closed = true;
                 break;
             };
             const sleep_ms = remainingSleepMs(report_start_ms, reportIntervalMs(cfg.interval), compat.milliTimestamp());
-            if (sleepOrStopMs(sleep_ms, stop_requested)) return;
+            if (sleepOrStopMs(sleep_ms, stop_requested, ws)) return;
+            if (ws.closed.load(.acquire)) break;
         }
-        if (!closed and isStopRequested(stop_requested)) return;
     }
 }
 
@@ -158,10 +146,11 @@ fn sleepOrStop(seconds: u64, stop_requested: ?*const std.atomic.Value(bool)) boo
     return isStopRequested(stop_requested);
 }
 
-fn sleepOrStopMs(milliseconds: u64, stop_requested: ?*const std.atomic.Value(bool)) bool {
+fn sleepOrStopMs(milliseconds: u64, stop_requested: ?*const std.atomic.Value(bool), conn: *ws_client.Client) bool {
     var remaining = milliseconds;
     while (remaining > 0) {
         if (isStopRequested(stop_requested)) return true;
+        if (conn.closed.load(.acquire)) return false;
         const chunk: u64 = @min(remaining, @as(u64, 100));
         compat.sleep(chunk * @as(u64, std.time.ns_per_ms));
         remaining -= chunk;
@@ -240,17 +229,40 @@ fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, 
     return error.WebSocketHandshakeFailed;
 }
 
-fn startDiscardReader(allocator: std.mem.Allocator, conn: *ws_client.Client) void {
+fn startDiscardReader(allocator: std.mem.Allocator, conn: *ws_client.Client) !void {
     conn.acquire();
-    const thread = std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, discardServerFrames, .{ allocator, conn }) catch {
-        conn.release(allocator);
-        return;
-    };
+    errdefer conn.release(allocator);
+    const thread = try std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, discardServerFrames, .{ allocator, conn });
     thread.detach();
+}
+
+fn startHeartbeat(allocator: std.mem.Allocator, conn: *ws_client.Client) !void {
+    conn.acquire();
+    errdefer conn.release(allocator);
+    const thread = try std.Thread.spawn(.{ .stack_size = thread_stacks.tls_worker_stack_size }, heartbeatLoop, .{ allocator, conn });
+    thread.detach();
+}
+
+fn heartbeatLoop(allocator: std.mem.Allocator, conn: *ws_client.Client) void {
+    defer conn.release(allocator);
+    while (!conn.closed.load(.acquire)) {
+        var remaining = heartbeat_interval_ms;
+        while (remaining > 0) {
+            if (conn.closed.load(.acquire)) return;
+            const chunk: u64 = @min(remaining, 100);
+            compat.sleep(chunk * std.time.ns_per_ms);
+            remaining -= chunk;
+        }
+        conn.writePing() catch {
+            conn.shutdown();
+            return;
+        };
+    }
 }
 
 fn discardServerFrames(allocator: std.mem.Allocator, conn: *ws_client.Client) void {
     defer conn.release(allocator);
+    defer conn.shutdown();
     while (true) {
         {
             const frame = conn.readFrame(allocator) catch {
@@ -290,5 +302,10 @@ fn postV2Request(allocator: std.mem.Allocator, cfg: config.Config, payload: []co
     const url = try http.v2RpcUrl(allocator, cfg.endpoint, cfg.token);
     defer allocator.free(url);
     const response = try http.postJsonReadAuthHeaders(allocator, url, body.body, cfg, "", headers);
-    allocator.free(response);
+    defer allocator.free(response);
+    try v2.validateUploadResponse(allocator, response);
+}
+
+pub fn postV2RequestForTest(allocator: std.mem.Allocator, cfg: config.Config, payload: []const u8) !void {
+    return postV2Request(allocator, cfg, payload);
 }

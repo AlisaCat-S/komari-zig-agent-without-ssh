@@ -6,3 +6,5 @@ build/
 auto-discovery.json
 net_static.json
 net_static.json.bak
+__pycache__/
+*.pyc

@@ -86,34 +86,10 @@ pub fn uploadV2(allocator: std.mem.Allocator, cfg: anytype, info: common.BasicIn
         return err;
     };
     defer allocator.free(response);
-    if (std.mem.trim(u8, response, " \t\r\n").len != 0) {
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, response, .{}) catch |err| {
-            try handleV2UploadFailure(allocator, cfg, info, err);
-            return;
-        };
-        defer parsed.deinit();
-        if (parsed.value != .object) {
-            try handleV2UploadFailure(allocator, cfg, info, error.InvalidV2Response);
-            return;
-        }
-        const object = parsed.value.object;
-        const jsonrpc = object.get("jsonrpc") orelse {
-            try handleV2UploadFailure(allocator, cfg, info, error.InvalidV2Response);
-            return;
-        };
-        if (jsonrpc != .string or !std.mem.eql(u8, jsonrpc.string, v2.Version)) {
-            try handleV2UploadFailure(allocator, cfg, info, error.InvalidV2Response);
-            return;
-        }
-        if (object.get("error")) |err_value| {
-            if (err_value != .object) {
-                try handleV2UploadFailure(allocator, cfg, info, error.InvalidV2Response);
-                return;
-            }
-            try handleV2UploadFailure(allocator, cfg, info, error.InvalidV2Response);
-            return;
-        }
-    }
+    v2.validateUploadResponse(allocator, response) catch |err| {
+        try handleV2UploadFailure(allocator, cfg, info, err);
+        return;
+    };
     v2_state.resetV2ProtocolFailures(2);
 }
 

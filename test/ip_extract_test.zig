@@ -1,5 +1,6 @@
 const std = @import("std");
 const ip = @import("protocol_ip");
+const local_http = @import("local_http.zig");
 
 test "extracts ipv4 from trace and json bodies" {
     try std.testing.expectEqualStrings("203.0.113.8", ip.findIPv4("fl=1\nip=203.0.113.8\n") orelse "");
@@ -14,6 +15,26 @@ test "extracts ipv6 from json and plain bodies" {
 test "returns null when no address is present" {
     try std.testing.expect(ip.findIPv4("status=ok\nno-address-here\n") == null);
     try std.testing.expect(ip.findIPv6("status=ok\nno-address-here\n") == null);
+}
+
+test "external IP probes never send dashboard credentials" {
+    const responses = [_][]const u8{"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\n8.8.8.8"};
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    const url = try server.url(std.testing.allocator, "/ip");
+    defer std.testing.allocator.free(url);
+    const address = try ip.lookupIPv4ForTest(std.testing.allocator, .{
+        .custom_dns = "",
+        .cf_access_client_id = "dashboard-id",
+        .cf_access_client_secret = "dashboard-secret",
+    }, url);
+    defer std.testing.allocator.free(address);
+    try std.testing.expectEqualStrings("8.8.8.8", address);
+    var captured = try server.finish();
+    defer captured.deinit();
+    try std.testing.expectEqual(@as(usize, 1), captured.requests.len);
+    try std.testing.expect(captured.requests[0].header("CF-Access-Client-Id") == null);
+    try std.testing.expect(captured.requests[0].header("CF-Access-Client-Secret") == null);
+    try std.testing.expect(captured.requests[0].header("Authorization") == null);
 }
 
 test "external lookup runs in automatic mode unless explicitly overridden" {

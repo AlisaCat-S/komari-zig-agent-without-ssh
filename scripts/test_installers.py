@@ -233,6 +233,8 @@ cp {shlex.quote(str(self.release))}/"${{url##*/}}" "$out"
                     unit = sandbox.root / ("etc/init/komari-agent.conf" if init == "upstart" else "etc/init.d/komari-agent")
                     self.assertIn(str(sandbox.config), unit.read_text())
                     self.assertNotIn("token", unit.read_text())
+                    if init == "procd":
+                        self.assertIn('--state-dir "' + str(sandbox.root / "var/lib/komari-agent") + '"', unit.read_text())
                     self.assertEqual(json.loads(sandbox.config.read_text())["token"], "token")
                 finally:
                     sandbox.doCleanups()

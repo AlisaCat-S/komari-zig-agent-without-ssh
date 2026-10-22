@@ -195,8 +195,15 @@ systemctl enable --now komari-agent
 
 `Dockerfile` 创建并使用 `komari` 非 root 用户。容器仍需要可访问的 `/proc` 和网络接口才能采集相应指标。
 
+### 月流量状态目录
+
+启用 `--month-rotate` 后，月流量保存在 `net_static.json`。手动运行时可用 `--state-dir /可写目录`、JSON 字段 `state_dir` 或环境变量 `AGENT_STATE_DIR` 指定目录；不指定时仍使用当前工作目录，已有状态文件无需迁移。目录须事先创建并允许运行账户写入。
+
+安装器使用 Linux/OpenWrt 的 `/var/lib/komari-agent`、FreeBSD 的 `/var/db/komari-agent`、macOS 的用户状态目录，以及 Windows 安装目录下的 `state` 子目录。Docker 工作目录为 `/var/lib/komari-agent`；需跨容器保留统计时，将持久卷挂载到该路径，并确保 `komari` 用户可写。二进制和配置文件不需要开放写权限。
+
 ## 安全边界
 
+- 面板 HTTP 请求仅跟随同源重定向（协议、主机和有效端口均相同）；跨源跳转返回 `HttpCrossOriginRedirect`，不会向新地址转发 Cloudflare Access 凭据、Token 或上报正文。迁移面板或从 HTTP 切换到 HTTPS 时，请直接更新 `endpoint`。
 - HTTPS/WSS 连接始终校验证书；请为面板配置受信任的 TLS 证书。
 - 面板地址和 Token 仍是敏感配置。请使用 HTTPS/WSS，并限制配置文件和服务管理权限。
 - Agent 运行时不会从 GitHub、上游仓库或代理下载、更新或替换自身，因此不会再被上游 Release 覆盖。管理员主动运行的安装器只会从本仓库的 Release 下载并校验附件。

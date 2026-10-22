@@ -107,9 +107,14 @@ fn probeConfig(cfg: anytype) struct {
         .timeout_ms = external_lookup_timeout_ms,
         .max_retries = external_lookup_max_retries,
         .custom_dns = cfg.custom_dns,
-        .cf_access_client_id = cfg.cf_access_client_id,
-        .cf_access_client_secret = cfg.cf_access_client_secret,
+        // These providers are third parties, not the configured dashboard.
+        .cf_access_client_id = "",
+        .cf_access_client_secret = "",
     };
+}
+
+pub fn lookupIPv4ForTest(allocator: std.mem.Allocator, cfg: anytype, url: []const u8) ![]const u8 {
+    return getAddressFromApis(allocator, cfg, &.{url}, .ipv4, findIPv4);
 }
 
 pub fn findIPv4(bytes: []const u8) ?[]const u8 {

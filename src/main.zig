@@ -44,6 +44,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try cfg.loadEnv(config_allocator);
     if (cfg.config_file.len != 0) try cfg.loadJsonFile(config_allocator, cfg.config_file);
     try cfg.normalize();
+    netstatic.setStateDirectory(cfg.state_dir);
     v2_state.initRequestedProtocolVersion(cfg.protocol_version);
     v2_state.resetConnectionProtocolVersion();
     debug.setEnabled(cfg.debug_log);

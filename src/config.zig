@@ -39,6 +39,7 @@ pub const Config = struct {
     get_ip_addr_from_nic: bool = false,
     host_proc: []const u8 = "",
     config_file: []const u8 = "",
+    state_dir: []const u8 = ".",
 
     pub fn default() Config {
         return .{};
@@ -77,6 +78,7 @@ pub const Config = struct {
         try setBoolJson(object, "get_ip_addr_from_nic", &self.get_ip_addr_from_nic);
         try setStringJson(allocator, object, "host_proc", &self.host_proc);
         try setStringJson(allocator, object, "config_file", &self.config_file);
+        try setStringJson(allocator, object, "state_dir", &self.state_dir);
     }
 
     pub fn loadJsonFile(self: *Config, allocator: std.mem.Allocator, path: []const u8) !void {
@@ -114,6 +116,7 @@ pub const Config = struct {
         setBoolEnv("AGENT_GET_IP_ADDR_FROM_NIC", &self.get_ip_addr_from_nic);
         try setStringEnv(allocator, "HOST_PROC", &self.host_proc);
         try setStringEnv(allocator, "AGENT_CONFIG_FILE", &self.config_file);
+        try setStringEnv(allocator, "AGENT_STATE_DIR", &self.state_dir);
     }
 
     pub fn normalize(self: *Config) !void {
@@ -178,6 +181,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             cfg.custom_ipv6 = try allocator.dupe(u8, v);
         } else if (optionValue(arg, "--config")) |v| {
             cfg.config_file = try allocator.dupe(u8, v);
+        } else if (optionValue(arg, "--state-dir")) |v| {
+            cfg.state_dir = try allocator.dupe(u8, v);
         } else if (boolOptionValue(arg, "--memory-include-cache")) |v| {
             cfg.memory_include_cache = v;
         } else if (boolOptionValue(arg, "--memory-exclude-bcf")) |v| {
@@ -244,6 +249,8 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Config
             cfg.get_ip_addr_from_nic = true;
         } else if (std.mem.eql(u8, arg, "--config")) {
             if (nextValue(args, &i)) |v| cfg.config_file = try allocator.dupe(u8, v);
+        } else if (std.mem.eql(u8, arg, "--state-dir")) {
+            if (nextValue(args, &i)) |v| cfg.state_dir = try allocator.dupe(u8, v);
         } else if (std.mem.startsWith(u8, arg, "-")) {
             _ = nextValue(args, &i);
         }

@@ -99,6 +99,16 @@ const Runtime = struct {
 };
 
 var runtime: ?*Runtime = null;
+var state_directory: []const u8 = ".";
+
+/// Configure before starting workers; the caller owns the directory string.
+/// The default preserves existing current-working-directory state files.
+pub fn setStateDirectory(directory: []const u8) void {
+    state_directory = directory;
+}
+// glibc places Zig's 256 KiB alternate signal stack in static thread-local
+// storage; a 256 KiB pthread stack cannot even accommodate that TLS block.
+pub const worker_stack_size: usize = 1024 * 1024;
 
 pub fn startOrContinue() !void {
     const allocator = std.heap.page_allocator;
@@ -112,21 +122,21 @@ pub fn startOrContinue() !void {
         rt.stop_requested = false;
     }
 
-    const sampler = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, sampleLoop, .{rt});
+    const sampler = try std.Thread.spawn(.{ .stack_size = worker_stack_size }, sampleLoop, .{rt});
     sampler.detach();
-    const saver = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, saveLoop, .{rt});
+    const saver = try std.Thread.spawn(.{ .stack_size = worker_stack_size }, saveLoop, .{rt});
     saver.detach();
 }
 
 pub fn stop() !void {
     const rt = runtime orelse return;
     rt.mutex.lock();
+    defer rt.mutex.unlock();
     rt.stop_requested = true;
+    rt.running = false;
     flushCacheLocked(rt, nowUnix());
     purgeExpiredLocked(rt);
     try saveToFileLocked(rt);
-    rt.running = false;
-    rt.mutex.unlock();
 }
 
 pub fn setNewConfig(new_cfg: NetStaticConfig) !void {
@@ -467,7 +477,9 @@ fn sumMapBetween(out: *Totals, map: SampleMap, start: u64, end: u64, include_nic
 }
 
 fn loadFromFileLocked(rt: *Runtime) !void {
-    const bytes = compat.readFileAlloc(rt.allocator, saveFilePath(), 64 * 1024 * 1024) catch |err| switch (err) {
+    const path = try std.fs.path.join(rt.allocator, &.{ state_directory, saveFilePath() });
+    defer rt.allocator.free(path);
+    const bytes = compat.readFileAlloc(rt.allocator, path, 64 * 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
@@ -545,9 +557,11 @@ fn saveToFileLocked(rt: *Runtime) !void {
     const bytes = try writer.toOwnedSlice();
     defer rt.allocator.free(bytes);
     const tmp = "net_static.json.tmp";
-    try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = tmp, .data = bytes });
-    std.Io.Dir.cwd().rename(tmp, std.Io.Dir.cwd(), saveFilePath(), std.Options.debug_io) catch {
-        try std.Io.Dir.cwd().writeFile(std.Options.debug_io, .{ .sub_path = saveFilePath(), .data = bytes });
+    var dir = try compat.openDir(state_directory, .{});
+    defer dir.close(std.Options.debug_io);
+    try dir.writeFile(std.Options.debug_io, .{ .sub_path = tmp, .data = bytes });
+    dir.rename(tmp, dir, saveFilePath(), std.Options.debug_io) catch {
+        try dir.writeFile(std.Options.debug_io, .{ .sub_path = saveFilePath(), .data = bytes });
     };
 }
 

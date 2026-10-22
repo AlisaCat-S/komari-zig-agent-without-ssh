@@ -5,6 +5,18 @@ pub const Version = "2.0";
 pub const MethodAgentReport = "agent.report";
 pub const MethodAgentBasicInfo = "agent.basicInfo";
 
+/// Check upload outcomes without interpreting or dispatching server events.
+pub fn validateUploadResponse(allocator: std.mem.Allocator, body: []const u8) !void {
+    if (std.mem.trim(u8, body, " \t\r\n").len == 0) return;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return error.InvalidV2Response;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidV2Response;
+    const object = parsed.value.object;
+    const jsonrpc = object.get("jsonrpc") orelse return error.InvalidV2Response;
+    if (jsonrpc != .string or !std.mem.eql(u8, jsonrpc.string, Version)) return error.InvalidV2Response;
+    if (object.contains("error")) return error.InvalidV2Response;
+}
+
 pub fn writeNotification(writer: anytype, method: []const u8, params_json: []const u8) !void {
     try writer.print("{{\"jsonrpc\":\"{s}\",\"method\":{f}", .{ Version, std.json.fmt(method, .{}) });
     if (params_json.len != 0) try writer.print(",\"params\":{s}", .{params_json});

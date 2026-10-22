@@ -1,6 +1,15 @@
 const std = @import("std");
 const netstatic = @import("report_netstatic");
 
+test "monthly workers have enough stack for glibc static TLS" {
+    try std.testing.expect(netstatic.worker_stack_size >= 1024 * 1024);
+    const worker = struct {
+        fn run() void {}
+    };
+    const thread = try std.Thread.spawn(.{ .stack_size = netstatic.worker_stack_size }, worker.run, .{});
+    thread.join();
+}
+
 test "last reset date returns current timestamp for invalid reset day" {
     const now = try netstatic.utcTimestamp(2026, 5, 2);
     try std.testing.expectEqual(now, netstatic.lastResetDate(0, now));

@@ -10,6 +10,7 @@ $Repository = "AlisaCat-S/komari-zig-agent-without-ssh"
 $TaskName = "Komari Agent"
 $BinaryPath = Join-Path $InstallPath "komari-agent.exe"
 $ConfigPath = Join-Path $InstallPath "config.json"
+$StatePath = Join-Path $InstallPath "state"
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -56,7 +57,7 @@ function Assert-ReleaseAssetHash {
 }
 
 function Set-InstallPermissions {
-    param([string]$Directory, [string]$Config)
+    param([string]$Directory, [string]$Config, [string]$StateDirectory)
 
     & icacls.exe $Directory /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-19:(OI)(CI)(RX)" | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -65,6 +66,10 @@ function Set-InstallPermissions {
     & icacls.exe $Config /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" "*S-1-5-19:(R)" | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to set permissions on $Config"
+    }
+    & icacls.exe $StateDirectory /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)(F)" "*S-1-5-32-544:(OI)(CI)(F)" "*S-1-5-19:(OI)(CI)(M)" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to set permissions on $StateDirectory"
     }
 }
 
@@ -100,9 +105,10 @@ try {
     if (-not $hadConfig) {
         Copy-Item -LiteralPath $examplePath -Destination $ConfigPath -Force
     }
-    Set-InstallPermissions $InstallPath $ConfigPath
+    New-Item -ItemType Directory -Path $StatePath -Force | Out-Null
+    Set-InstallPermissions $InstallPath $ConfigPath $StatePath
 
-    $action = New-ScheduledTaskAction -Execute $BinaryPath -Argument "--config `"$ConfigPath`""
+    $action = New-ScheduledTaskAction -Execute $BinaryPath -Argument "--config `"$ConfigPath`" --state-dir `"$StatePath`"" -WorkingDirectory $StatePath
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\LocalService" -LogonType ServiceAccount -RunLevel Limited
     $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -StartWhenAvailable

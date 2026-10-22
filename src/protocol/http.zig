@@ -481,6 +481,10 @@ fn requestReadWithFamilyHeaders(
             const location = response.location orelse return error.HttpRedirectMissingLocation;
             if (redirects >= max_redirects) return error.HttpTooManyRedirects;
             const next_url = try resolveRedirectUrl(allocator, current_url, location);
+            errdefer allocator.free(next_url);
+            // Headers and report bodies belong to the configured origin. Do not
+            // connect to a redirect target before checking this trust boundary.
+            if (!try sameOrigin(allocator, current_url, next_url)) return error.HttpCrossOriginRedirect;
             response.deinit(allocator);
             allocator.free(current_url);
             current_url = next_url;
@@ -509,7 +513,7 @@ fn requestReadWithFamilyHeadersOnce(
     const uri = try std.Uri.parse(url);
     const host = try uriHost(allocator, uri);
     defer allocator.free(host);
-    const use_tls = std.mem.eql(u8, uri.scheme, "https");
+    const use_tls = std.ascii.eqlIgnoreCase(uri.scheme, "https");
     const port: u16 = uri.port orelse if (use_tls) 443 else 80;
     const path = try uriPathQuery(allocator, uri);
     defer allocator.free(path);
@@ -745,24 +749,45 @@ fn isRedirectStatus(status: u16) bool {
     return status >= 300 and status < 400;
 }
 
+fn sameOrigin(allocator: std.mem.Allocator, from_url: []const u8, to_url: []const u8) !bool {
+    const from = try std.Uri.parse(from_url);
+    const to = try std.Uri.parse(to_url);
+    if (!std.ascii.eqlIgnoreCase(from.scheme, to.scheme)) return false;
+    if ((from.port orelse defaultPort(from.scheme)) != (to.port orelse defaultPort(to.scheme))) return false;
+    const from_host = try uriHost(allocator, from);
+    defer allocator.free(from_host);
+    const to_host = try uriHost(allocator, to);
+    defer allocator.free(to_host);
+    return std.ascii.eqlIgnoreCase(from_host, to_host);
+}
+
+pub fn sameOriginForTest(allocator: std.mem.Allocator, from_url: []const u8, to_url: []const u8) !bool {
+    return sameOrigin(allocator, from_url, to_url);
+}
+
 fn resolveRedirectUrl(allocator: std.mem.Allocator, base_url: []const u8, location: []const u8) ![]const u8 {
-    if (std.mem.startsWith(u8, location, "http://") or std.mem.startsWith(u8, location, "https://")) {
+    if (std.ascii.startsWithIgnoreCase(location, "http://") or std.ascii.startsWithIgnoreCase(location, "https://")) {
         return idna.convertUrlToAscii(allocator, location);
     }
 
     const base = try std.Uri.parse(base_url);
+    if (std.mem.startsWith(u8, location, "//")) {
+        const absolute = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ base.scheme, location });
+        defer allocator.free(absolute);
+        return idna.convertUrlToAscii(allocator, absolute);
+    }
     const host = try uriHost(allocator, base);
     defer allocator.free(host);
-    const port = if (base.port) |p| try std.fmt.allocPrint(allocator, ":{d}", .{p}) else try allocator.dupe(u8, "");
-    defer allocator.free(port);
+    const authority = try formatHostHeader(allocator, host, base.port orelse defaultPort(base.scheme), std.ascii.eqlIgnoreCase(base.scheme, "https"));
+    defer allocator.free(authority);
 
     if (std.mem.startsWith(u8, location, "/")) {
-        return std.fmt.allocPrint(allocator, "{s}://{s}{s}{s}", .{ base.scheme, host, port, location });
+        return std.fmt.allocPrint(allocator, "{s}://{s}{s}", .{ base.scheme, authority, location });
     }
 
     const base_path = if (base.path.percent_encoded.len == 0) "/" else base.path.percent_encoded;
     const slash = std.mem.lastIndexOfScalar(u8, base_path, '/') orelse 0;
-    return std.fmt.allocPrint(allocator, "{s}://{s}{s}{s}/{s}", .{ base.scheme, host, port, base_path[0..slash], location });
+    return std.fmt.allocPrint(allocator, "{s}://{s}{s}/{s}", .{ base.scheme, authority, base_path[0..slash], location });
 }
 
 const HttpResponse = struct {
@@ -1109,6 +1134,12 @@ fn sendConnectTunnel(allocator: std.mem.Allocator, conn: *raw_conn.RawConn, host
     try conn.writer().writeAll(bytes);
     try conn.flush();
     const response = try readHttpResponse(allocator, conn.reader());
-    defer allocator.free(response.body);
+    defer response.deinit(allocator);
     if (response.status != 200) return error.ProxyConnectFailed;
+}
+
+pub fn requestConnectTunnelForTest(allocator: std.mem.Allocator, proxy_port: u16) !void {
+    const conn = try raw_conn.RawConn.connect(allocator, "127.0.0.1", proxy_port, false, "", 5_000);
+    defer conn.close();
+    return sendConnectTunnel(allocator, conn, "panel.example", 443, null);
 }

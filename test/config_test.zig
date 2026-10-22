@@ -1,6 +1,21 @@
 const std = @import("std");
 const config = @import("config");
 
+test "state directory preserves cwd default and supports CLI and JSON" {
+    try std.testing.expectEqualStrings(".", (config.Config{}).state_dir);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const []const u8{
+        &.{ "agent", "--state-dir", "/var/lib/komari-agent" },
+        &.{ "agent", "--state-dir=/var/lib/komari-agent" },
+    }) |args| {
+        var cfg = try config.parseArgs(arena.allocator(), args);
+        try std.testing.expectEqualStrings("/var/lib/komari-agent", cfg.state_dir);
+        try cfg.loadJson(arena.allocator(), "{\"state_dir\":\"/state\"}");
+        try std.testing.expectEqualStrings("/state", cfg.state_dir);
+    }
+}
+
 test "defaults keep monitoring enabled without remote-control switches" {
     const cfg = config.Config.default();
     try std.testing.expectEqual(@as(f64, 3.0), cfg.interval);

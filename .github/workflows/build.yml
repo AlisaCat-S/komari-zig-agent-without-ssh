@@ -159,6 +159,8 @@ jobs:
         run: |
           python3 scripts/mock_komari_smoke.py zig-out/bin/komari-agent --max-basic-info-seconds 15
           python3 scripts/mock_komari_smoke.py zig-out/bin/komari-agent --protocol-version 2 --max-basic-info-seconds 15
+      - name: Check heartbeat and monthly state with glibc
+        run: python3 scripts/test_monitoring_runtime.py zig-out/bin/komari-agent
 
   linux-agent-smoke:
     name: Linux Agent Smoke (${{ matrix.name }})

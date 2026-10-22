@@ -70,7 +70,6 @@ test "websocket small incoming frames reuse client read pool" {
     try std.testing.expectEqualStrings("bye", second.payload);
 }
 
-
 test "websocket accept digest is derived from nonce" {
     const accept = try ws_client.expectedAcceptForTest(std.testing.allocator, "dGhlIHNhbXBsZSBub25jZQ==");
     defer std.testing.allocator.free(accept);
@@ -86,4 +85,20 @@ test "websocket writer masks payload with non-fixed frame mask" {
     try std.testing.expectEqual(@as(u8, 0x81), frame[0]);
     try std.testing.expectEqual(@as(u8, 0x80 | 5), frame[1]);
     try std.testing.expect(frame[4] != 1 or frame[5] != 2 or frame[6] != 3 or frame[7] != 4);
+}
+
+test "websocket handshake validates accept without retaining response headers" {
+    const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
+    const head = "HTTP/1.1 101 Switching Protocols\r\n";
+    const accept = "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n";
+    try ws_client.readHandshakeFromBytesForTest(std.testing.allocator, head ++ accept ++ "\r\n", nonce);
+    try std.testing.expectError(error.WebSocketHandshakeFailed, ws_client.readHandshakeFromBytesForTest(std.testing.allocator, head ++ "\r\n", nonce));
+    try std.testing.expectError(error.WebSocketHandshakeFailed, ws_client.readHandshakeFromBytesForTest(std.testing.allocator, head ++ "Sec-WebSocket-Accept: wrong\r\n\r\n", nonce));
+    // Repeat failed reconnects with a leak-detecting allocator, including mixed-case duplicates.
+    for (0..6) |_| {
+        try std.testing.expectError(error.WebSocketHandshakeFailed, ws_client.readHandshakeFromBytesForTest(std.testing.allocator, head ++ accept ** 4096 ++ "\r\n", nonce));
+        try std.testing.expectError(error.WebSocketHandshakeFailed, ws_client.readHandshakeFromBytesForTest(std.testing.allocator, head ++ accept ++ "sec-websocket-accept: wrong\r\n\r\n", nonce));
+        try std.testing.expectError(error.EndOfStream, ws_client.readHandshakeFromBytesForTest(std.testing.allocator, head ++ accept, nonce));
+        try std.testing.expectError(error.LineTooLong, ws_client.readHandshakeFromBytesForTest(std.testing.allocator, head ++ accept ++ "x" ** 1024, nonce));
+    }
 }

@@ -140,11 +140,14 @@ pub const RawConn = struct {
 
     pub fn shutdown(self: *RawConn) void {
         if (self.closed.swap(true, .acq_rel)) return;
-        net.close(self.stream);
+        // Wake both I/O workers without recycling the descriptor while another
+        // worker may still be using it. The final owner closes it below.
+        self.stream.shutdown(std.Options.debug_io, .both) catch {};
     }
 
     pub fn close(self: *RawConn) void {
         self.shutdown();
+        net.close(self.stream);
         self.allocator.destroy(self);
     }
 

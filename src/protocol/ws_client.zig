@@ -313,20 +313,27 @@ fn readHandshake(reader: *std.Io.Reader, nonce: []const u8, allocator: std.mem.A
     const first = line[0..n];
     if (first.len < 12 or !std.mem.startsWith(u8, first, "HTTP/1.")) return error.WebSocketHandshakeFailed;
     const code = try std.fmt.parseInt(u16, first[9..12], 10);
-    var accept: ?[]const u8 = null;
+    const expected = try expectedAccept(allocator, nonce);
+    defer allocator.free(expected);
+    var accept_seen = false;
+    var accept_matches = false;
     while (true) {
         const len = try readLine(reader, &line);
         if (len == 0) break;
         const header = line[0..len];
         if (header.len >= "Sec-WebSocket-Accept:".len and std.ascii.startsWithIgnoreCase(header, "Sec-WebSocket-Accept:")) {
-            accept = try allocator.dupe(u8, std.mem.trim(u8, header["Sec-WebSocket-Accept:".len..], " \t"));
+            if (accept_seen) return error.WebSocketHandshakeFailed;
+            accept_seen = true;
+            accept_matches = std.mem.eql(u8, std.mem.trim(u8, header["Sec-WebSocket-Accept:".len..], " \t"), expected);
         }
     }
-    defer if (accept) |value| allocator.free(value);
     if (code != 101) return error.WebSocketHandshakeFailed;
-    const expected = try expectedAccept(allocator, nonce);
-    defer allocator.free(expected);
-    if (accept == null or !std.mem.eql(u8, accept.?, expected)) return error.WebSocketHandshakeFailed;
+    if (!accept_seen or !accept_matches) return error.WebSocketHandshakeFailed;
+}
+
+pub fn readHandshakeFromBytesForTest(allocator: std.mem.Allocator, bytes: []const u8, nonce: []const u8) !void {
+    var reader: std.Io.Reader = .fixed(bytes);
+    return readHandshake(&reader, nonce, allocator);
 }
 
 fn readLine(reader: *std.Io.Reader, buf: []u8) !usize {

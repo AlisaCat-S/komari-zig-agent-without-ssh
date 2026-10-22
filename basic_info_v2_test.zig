@@ -3,6 +3,23 @@ const basic_info = @import("src/protocol/basic_info.zig");
 const config = @import("src/config.zig");
 const local_http = @import("test/local_http.zig");
 
+test "v2 HTTP report does not mistake RPC errors for successful uploads" {
+    const report_ws = @import("src/protocol/report_ws.zig");
+    const error_body = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}";
+    const response = std.fmt.comptimePrint("HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ error_body.len, error_body });
+    const responses = [_][]const u8{response};
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    defer server.join() catch unreachable;
+    const endpoint = try server.url(std.testing.allocator, "");
+    defer std.testing.allocator.free(endpoint);
+    try std.testing.expectError(error.InvalidV2Response, report_ws.postV2RequestForTest(std.testing.allocator, .{
+        .endpoint = endpoint,
+        .token = "test-token",
+        .max_retries = 0,
+    }, "{\"jsonrpc\":\"2.0\",\"method\":\"agent.report\"}"));
+    try std.testing.expect(report_ws.heartbeat_interval_ms < @import("src/protocol/http.zig").default_timeout_ms);
+}
+
 test "basic info v2 upload sends rpc request and accepts response" {
     const body = "{\"jsonrpc\":\"2.0\",\"result\":{\"status\":\"ok\"}}";
     const response = std.fmt.comptimePrint(
@@ -240,4 +257,14 @@ test "failed v1 fallback and reconnect prefer requested v2" {
     report_ws.applyV1FallbackConnectResultForTest(true);
     report_ws.prepareReconnectCycleForTest();
     try std.testing.expectEqual(@as(i32, 2), report_ws.uploadProtocolVersionForTest());
+}
+
+test "v2 upload response validation rejects errors and malformed JSON but ignores events" {
+    const v2 = @import("src/protocol/v2.zig");
+    for ([_][]const u8{ "", " \r\n", "{\"jsonrpc\":\"2.0\",\"result\":{}}", "{\"jsonrpc\":\"2.0\",\"result\":{\"events\":[{\"method\":\"agent.exec\"}]}}" }) |body| {
+        try v2.validateUploadResponse(std.testing.allocator, body);
+    }
+    for ([_][]const u8{ "not json", "[]", "{}", "{\"jsonrpc\":\"1.0\"}", "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601}}" }) |body| {
+        try std.testing.expectError(error.InvalidV2Response, v2.validateUploadResponse(std.testing.allocator, body));
+    }
 }

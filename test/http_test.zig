@@ -4,6 +4,16 @@ const http = @import("protocol_http");
 const net = @import("net");
 const local_http = @import("local_http.zig");
 
+test "CONNECT releases redirect locations on every failed attempt" {
+    const response = "HTTP/1.1 302 Found\r\nLocation: https://proxy.example/login\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    const responses = [_][]const u8{response} ** 6;
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    defer server.join() catch unreachable;
+    for (responses) |_| {
+        try std.testing.expectError(error.ProxyConnectFailed, http.requestConnectTunnelForTest(std.testing.allocator, server.ctx.listener.socket.address.getPort()));
+    }
+}
+
 test "endpoint helpers trim slash and place token query" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -255,4 +265,84 @@ test "address helper releases redirect response on error" {
     defer server.join() catch unreachable;
     const addrs = [_]net.Address{try net.parseIp("127.0.0.1", server.ctx.listener.socket.address.getPort())};
     try std.testing.expectError(error.HttpStatusNotOk, http.requestReadViaAddressesForTest(std.testing.allocator, &addrs, "/", "127.0.0.1", 5_000));
+}
+
+test "http redirect origin compares scheme host and effective port" {
+    const cases = .{
+        .{ "https://Panel.example/a", "https://panel.example:443/b", true },
+        .{ "https://panel.example/a", "HTTPS://panel.example/b", true },
+        .{ "http://panel.example/a", "http://panel.example:80/b", true },
+        .{ "https://panel.example/a", "http://panel.example/a", false },
+        .{ "http://panel.example/a", "https://panel.example/a", false },
+        .{ "https://panel.example/a", "https://other.example/a", false },
+        .{ "https://panel.example/a", "https://panel.example:8443/a", false },
+        .{ "https://[::1]/a", "https://[::1]:443/b", true },
+    };
+    inline for (cases) |case| {
+        try std.testing.expectEqual(case[2], try http.sameOriginForTest(std.testing.allocator, case[0], case[1]));
+    }
+}
+
+test "http authenticated reports reject cross-origin redirects before sending" {
+    inline for (.{ 301, 302, 303, 307, 308 }) |status| {
+        inline for (.{ false, true }) |network_path| {
+            const target_responses = [_][]const u8{"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"};
+            var target = try local_http.Server.start(std.testing.allocator, &target_responses);
+            const target_url = try target.url(std.testing.allocator, "/capture?token=private");
+            defer std.testing.allocator.free(target_url);
+            const location = if (network_path) target_url["http:".len..] else target_url;
+            const redirect = try std.fmt.allocPrint(std.testing.allocator, "HTTP/1.1 {d} Redirect\r\nLocation: {s}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", .{ status, location });
+            defer std.testing.allocator.free(redirect);
+            const responses = [_][]const u8{redirect};
+            var source = try local_http.Server.start(std.testing.allocator, &responses);
+            defer source.join() catch unreachable;
+            const url = try source.url(std.testing.allocator, "/report?token=private");
+            defer std.testing.allocator.free(url);
+            const result = http.postJsonReadAuth(std.testing.allocator, url, "{\"private\":true}", config.Config{
+                .cf_access_client_id = "access-id",
+                .cf_access_client_secret = "access-secret",
+            }, "bearer-secret");
+            if (result) |unexpected_body| {
+                std.testing.allocator.free(unexpected_body);
+                var captured = try target.finish();
+                defer captured.deinit();
+                return error.TestUnexpectedResult;
+            } else |_| {}
+            // Finish the capture server with an independent, credential-free request.
+            const probe = try http.getReadCfg(std.testing.allocator, target_url, config.Config{});
+            defer std.testing.allocator.free(probe);
+            var captured = try target.finish();
+            defer captured.deinit();
+            try std.testing.expectError(error.HttpCrossOriginRedirect, result);
+            try std.testing.expectEqual(@as(usize, 1), captured.requests.len);
+            try std.testing.expect(captured.requests[0].header("CF-Access-Client-Id") == null);
+            try std.testing.expect(captured.requests[0].header("CF-Access-Client-Secret") == null);
+            try std.testing.expect(captured.requests[0].header("Authorization") == null);
+            try std.testing.expectEqual(@as(usize, 0), captured.requests[0].body.len);
+        }
+    }
+}
+
+test "http same-origin redirect preserves report credentials and body" {
+    const responses = [_][]const u8{
+        "HTTP/1.1 307 Redirect\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    };
+    var server = try local_http.Server.start(std.testing.allocator, &responses);
+    const url = try server.url(std.testing.allocator, "/report");
+    defer std.testing.allocator.free(url);
+    const body = try http.postJsonReadAuth(std.testing.allocator, url, "report", config.Config{
+        .cf_access_client_id = "id",
+        .cf_access_client_secret = "secret",
+    }, "token");
+    defer std.testing.allocator.free(body);
+    var captured = try server.finish();
+    defer captured.deinit();
+    try std.testing.expectEqual(@as(usize, 2), captured.requests.len);
+    for (captured.requests) |request| {
+        try std.testing.expectEqualStrings("report", request.body);
+        try std.testing.expectEqualStrings("id", request.header("CF-Access-Client-Id").?);
+        try std.testing.expectEqualStrings("secret", request.header("CF-Access-Client-Secret").?);
+        try std.testing.expectEqualStrings("Bearer token", request.header("Authorization").?);
+    }
 }

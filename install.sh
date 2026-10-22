@@ -442,7 +442,7 @@ USE_PROCD=1
 
 start_service() {
     procd_open_instance
-    procd_set_param command "${BINARY_PATH}" --config "${CONFIG_PATH}"
+    procd_set_param command "${BINARY_PATH}" --config "${CONFIG_PATH}" --state-dir "${STATE_DIR}"
     procd_set_param user "${SERVICE_USER}"
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
@@ -490,7 +490,7 @@ rcvar="komari_agent_enable"
 command="/usr/sbin/daemon"
 pidfile="/var/run/komari-agent.pid"
 procname="${BINARY_PATH}"
-command_args="-f -u ${SERVICE_USER} -p \$pidfile ${BINARY_PATH} --config ${CONFIG_PATH}"
+command_args="-f -u ${SERVICE_USER} -p \$pidfile ${BINARY_PATH} --config ${CONFIG_PATH} --state-dir ${STATE_DIR}"
 load_rc_config "\$name"
 : \${komari_agent_enable:="NO"}
 run_rc_command "\$1"
