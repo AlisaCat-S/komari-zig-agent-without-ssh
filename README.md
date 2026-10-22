@@ -77,10 +77,11 @@ wget -qO- https://raw.githubusercontent.com/AlisaCat-S/komari-zig-agent-without-
 ```sh
 ./install.sh -e https://panel.example -t YOUR_AGENT_TOKEN -i 2 --exclude-nics 'docker*,veth*'
 ./install.sh --install-version v0.1.42.1
+./install.sh -e https://panel.example -t YOUR_AGENT_TOKEN --install-ghproxy https://your-proxy.example
 ./install.sh --help
 ```
 
-支持官方参数中的 `-e/--endpoint`、`-t/--token`、`-i/--interval`、`-r/--max-retries`、`-c/--reconnect-interval`、`--install-version` 以及 `--help` 中列出的监控参数；长参数也可用 `--参数=值`。布尔开关可使用 `=false` 关闭。不支持远程控制、自动更新、自动发现、GitHub 代理和自定义安装目录/服务名；遇到这些或其他未知参数会直接报错，不会静默忽略。
+支持官方参数中的 `-e/--endpoint`、`-t/--token`、`-i/--interval`、`-r/--max-retries`、`-c/--reconnect-interval`、`--install-version`、`--install-ghproxy` 以及 `--help` 中列出的监控参数；长参数也可用 `--参数=值`。布尔开关可使用 `=false` 关闭。不支持远程控制、自动更新、自动发现和自定义安装目录/服务名；遇到这些或其他未知参数会直接报错，不会静默忽略。
 
 脚本会检测默认官方二进制（Linux/FreeBSD 的 `/opt/komari/agent`、`/usr/local/komari/agent`，macOS 当前用户的 `~/.komari/agent`）和同名旧服务。检测到后会通过终端询问是否卸载替换，默认拒绝；管道安装也可正常回答。没有交互终端时拒绝替换。自定义名称的旧服务须先手动卸载；macOS 系统级官方服务须先由管理员卸载。
 
@@ -90,7 +91,9 @@ wget -qO- https://raw.githubusercontent.com/AlisaCat-S/komari-zig-agent-without-
 
 安装器支持 Linux systemd、OpenRC、Upstart、OpenWrt `procd`、FreeBSD `rc.d`、macOS 用户级 `launchd` 和 Windows。所有 Release 附件均来自本仓库：[install.sh](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.sh)、[install.ps1](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/install.ps1) 与 [SHA256SUMS](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/SHA256SUMS)。
 
-安装器只会从 `AlisaCat-S/komari-zig-agent-without-ssh` 的同一 GitHub Release 下载二进制、配置模板和服务定义，并校验 `SHA256SUMS`。不会访问原 fork 上游、GitHub 代理或第三方二进制服务；Agent 本身不会自动更新。
+安装器只会从 `AlisaCat-S/komari-zig-agent-without-ssh` 的同一 GitHub Release 下载二进制、配置模板和服务定义，并校验 `SHA256SUMS`。默认直连 GitHub，不会访问原 fork 上游或自动选择第三方代理；Agent 本身不会自动更新。
+
+GitHub 下载受限时，POSIX 安装器可添加 `--install-ghproxy https://your-proxy.example`（也支持 `--install-ghproxy=URL`）。安装器会请求 `https://your-proxy.example/https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/...`，仅用于本次附件下载，不写入 Agent 配置。请使用你信任的 HTTPS 代理；附件和 `SHA256SUMS` 均经该代理下载，哈希校验能发现文件损坏，但不能防止代理同时篡改文件与校验清单。
 
 Linux、FreeBSD 和 OpenWrt 需要以 root 运行安装器。Linux/FreeBSD 上取得 root shell 后，可按下面方式下载、校验并安装：
 

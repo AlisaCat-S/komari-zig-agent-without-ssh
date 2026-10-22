@@ -9,6 +9,7 @@ readonly SERVICE_NAME="komari-agent"
 readonly SERVICE_USER="komari"
 readonly SERVICE_GROUP="komari"
 VERSION="${KOMARI_VERSION:-latest}"
+INSTALL_GHPROXY=""
 CONFIG_OVERRIDES=""
 HAS_ENDPOINT=false
 HAS_AUTH=false
@@ -39,13 +40,14 @@ Usage: install.sh [options]
   -r, --max-retries COUNT     Retry count (>= 0)
   -c, --reconnect-interval N  Reconnect delay in seconds (>= 0)
       --install-version TAG  latest or a fork release tag
+      --install-ghproxy URL  HTTPS GitHub download proxy prefix (installation only)
       --help                 Show this help
 Monitoring options: --info-report-interval, --protocol-version, --prefer-ip-version,
 --include-nics, --exclude-nics, --include-mountpoint, --month-rotate,
 --cf-access-client-id, --cf-access-client-secret, --custom-dns, --custom-ipv4,
 --custom-ipv6, --memory-include-cache, --memory-exclude-bcf, --disable-compression,
 --gpu, --debug-log, --get-ip-addr-from-nic. Boolean flags accept =true or =false.
-Auto-discovery, remote-control, self-update, proxy, custom install-dir/service-name options are unsupported.
+Auto-discovery, remote-control, self-update, custom install-dir/service-name options are unsupported.
 Without options, an existing config is preserved; a new install waits for manual config.
 Replacing a detected legacy agent requires confirmation on /dev/tty (default: No).
 EOF
@@ -76,6 +78,7 @@ parse_options() {
         case "$option" in
             -h|--help) usage; exit 0 ;;
             --install-version) key=version; kind=string ;;
+            --install-ghproxy) key=ghproxy; kind=ghproxy ;;
             -e|--endpoint) key=endpoint; kind=string; HAS_ENDPOINT=true ;;
             -t|--token) key=token; kind=string; HAS_AUTH=true ;;
             -i|--interval) key=interval; kind=positive ;;
@@ -114,6 +117,14 @@ parse_options() {
         esac
         [ -n "$value" ] || fail "empty value for $option"
         case "$kind" in
+            ghproxy)
+                case "$value" in https://*) ;; *) fail "$option must be an HTTPS URL" ;; esac
+                case "$value" in *'?'*|*'#'*|*'@'*|*'\'*) fail "invalid URL for $option" ;; esac
+                case "$value" in *[[:space:][:cntrl:]]*) fail "invalid URL for $option" ;; esac
+                authority=${value#https://}; authority=${authority%%/*}
+                [ -n "$authority" ] || fail "missing host for $option"
+                while [ "${value%/}" != "$value" ]; do value=${value%/}; done
+                ;;
             string|ip)
                 if [ "$kind" = ip ]; then
                     case "$value" in 4|6) ;; *) fail "$option must be 4 or 6" ;; esac
@@ -136,6 +147,7 @@ parse_options() {
                 encoded=$value ;;
         esac
         if [ "$key" = version ]; then VERSION=$value
+        elif [ "$key" = ghproxy ]; then INSTALL_GHPROXY=$value
         else
             CONFIG_OVERRIDES="${CONFIG_OVERRIDES}${CONFIG_OVERRIDES:+,}\"${key}\":${encoded}"
             # Explicit token authentication supersedes any old auto-discovery setting.
@@ -239,17 +251,21 @@ remove_legacy() {
 
 download() {
     asset="$1"
+    download_url="${RELEASE_BASE}/${asset}"
+    if [ -n "$INSTALL_GHPROXY" ]; then
+        download_url="${INSTALL_GHPROXY}/${download_url}"
+    fi
     log "Downloading ${asset} from ${REPOSITORY} (${VERSION})"
     case "$DOWNLOADER" in
         curl)
             curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 180 \
-                --output "${TEMP_DIR}/${asset}" "${RELEASE_BASE}/${asset}"
+                --output "${TEMP_DIR}/${asset}" "$download_url"
             ;;
         uclient-fetch)
-            uclient-fetch -q -O "${TEMP_DIR}/${asset}" "${RELEASE_BASE}/${asset}"
+            uclient-fetch -q -O "${TEMP_DIR}/${asset}" "$download_url"
             ;;
         wget)
-            wget -q -O "${TEMP_DIR}/${asset}" "${RELEASE_BASE}/${asset}"
+            wget -q -O "${TEMP_DIR}/${asset}" "$download_url"
             ;;
         *) fail "internal error: unsupported downloader ${DOWNLOADER}" ;;
     esac

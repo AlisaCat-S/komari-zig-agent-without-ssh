@@ -58,6 +58,7 @@ echo "download" >> {shlex.quote(str(self.events))}
 while [ "$#" -gt 0 ]; do
   case "$1" in --output) out=$2; shift 2 ;; *) url=$1; shift ;; esac
 done
+echo "url=$url" >> {shlex.quote(str(self.events))}
 cp {shlex.quote(str(self.release))}/"${{url##*/}}" "$out"
 ''')
 
@@ -156,6 +157,40 @@ cp {shlex.quote(str(self.release))}/"${{url##*/}}" "$out"
                 self.assertNotEqual(code, 0)
                 self.assertFalse(self.config.exists())
                 self.assertEqual(self.events.read_text(), "")
+
+    def test_install_ghproxy_only_prefixes_fork_release_downloads(self):
+        for option in (("--install-ghproxy", "https://proxy.example/prefix/"),
+                       ("--install-ghproxy=https://proxy.example/prefix",)):
+            with self.subTest(option=option):
+                self.events.write_text("")
+                self.unit.unlink(missing_ok=True)
+                code, output = self.run_installer(*option)
+                self.assertEqual(code, 0, output)
+                urls = [line[4:] for line in self.events.read_text().splitlines() if line.startswith("url=")]
+                base = "https://proxy.example/prefix/https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/"
+                self.assertEqual(urls, [base + name for name in ("SHA256SUMS", self.asset, "config.json.example", "komari-agent.service")])
+                self.assertNotIn("ghproxy", self.config.read_text() + self.unit.read_text())
+
+    def test_corrupt_proxied_download_does_not_stop_existing_agent(self):
+        self.old_agent()
+        (self.release / self.asset).write_text("corrupted")
+        code, output = self.run_installer("-e", "url", "-t", "token", "--install-ghproxy=https://proxy.example", answer="y")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("verification failed", output)
+        self.assertNotIn("systemctl", self.events.read_text())
+        self.assertEqual(self.legacy.read_text(), "official agent")
+
+    def test_invalid_install_ghproxy_is_rejected_before_download(self):
+        for args in (("--install-ghproxy",), ("--install-ghproxy=",),
+                     ("--install-ghproxy=http://proxy.example",), ("--install-ghproxy=https:///path",),
+                     ("--install-ghproxy=https://proxy.example/?x=1",),
+                     ("--install-ghproxy=https://user:secret@proxy.example",),
+                     ("--install-ghproxy=https://proxy.example/\nheader",)):
+            with self.subTest(args=args):
+                code, _ = self.run_installer(*args)
+                self.assertNotEqual(code, 0)
+                self.assertEqual(self.events.read_text(), "")
+                self.assertFalse(self.config.exists())
 
     def test_refusal_and_no_tty_leave_official_untouched(self):
         self.old_agent()
