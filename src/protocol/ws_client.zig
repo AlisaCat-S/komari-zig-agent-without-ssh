@@ -183,8 +183,42 @@ pub fn connect(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cl
 fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Client {
     const target = try parseUrl(url);
     const scheme = if (target.tls) "wss" else "ws";
+    const family = http.dashboardAddressFamily(cfg);
+    const timeout_ms = http.timeoutMsForConfig(cfg);
     debug.log("websocket transport connect start host={s} port={d} tls={}", .{ target.host, target.port, target.tls });
-    const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.custom_dns, http.dashboardAddressFamily(cfg), http.timeoutMsForConfig(cfg));
+
+    const proxy_url = try http.processProxyUrl(allocator, scheme, target.host, target.port);
+    defer if (proxy_url) |value| allocator.free(value);
+    if (proxy_url != null) {
+        const raw_http = try http.connectRawHttp(allocator, scheme, target.host, target.port, target.tls, cfg.custom_dns, family, timeout_ms);
+        return finishConnectHandshake(allocator, url, target, cfg, raw_http);
+    }
+
+    const addrs = try raw_conn.resolveAddresses(allocator, target.host, target.port, cfg.custom_dns);
+    defer allocator.free(addrs);
+    var last_err: ?anyerror = null;
+    for (addrs) |addr| {
+        if (!raw_conn.familyMatches(addr, family)) continue;
+        var addr_buf: [96]u8 = undefined;
+        const addr_text = raw_conn.formatAddress(&addr_buf, addr);
+        const conn = raw_conn.RawConn.connectResolved(allocator, addr, target.host, target.tls, timeout_ms) catch |err| {
+            last_err = err;
+            debug.log("websocket tcp/tls failed via {s}: {s}", .{ addr_text, @errorName(err) });
+            continue;
+        };
+        const raw_http = http.RawConnection{ .conn = conn };
+        const client = finishConnectHandshake(allocator, url, target, cfg, raw_http) catch |err| {
+            last_err = err;
+            debug.log("websocket skipping address {s} due to {s}", .{ addr_text, @errorName(err) });
+            continue;
+        };
+        debug.log("websocket connected via {s}", .{addr_text});
+        return client;
+    }
+    return last_err orelse error.ConnectFailed;
+}
+
+fn finishConnectHandshake(allocator: std.mem.Allocator, url: []const u8, target: Target, cfg: anytype, raw_http: http.RawConnection) !*Client {
     errdefer raw_http.close(allocator);
     const raw = raw_http.conn;
     debug.log("websocket transport connected host={s} port={d}", .{ target.host, target.port });
@@ -195,9 +229,11 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     var req = std.Io.Writer.Allocating.init(allocator);
     defer req.deinit();
     const request_target = if (raw_http.proxied_plain) url else target.path;
+    const host_header = try http.formatHostHeader(allocator, target.host, target.port, target.tls);
+    defer allocator.free(host_header);
     try req.writer.print(
         "GET {s} HTTP/1.1\r\nHost: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\nUser-Agent: komari-zig-agent\r\n",
-        .{ request_target, target.host, nonce },
+        .{ request_target, host_header, nonce },
     );
     if (raw_http.proxy_authorization) |authorization| try req.writer.print("Proxy-Authorization: {s}\r\n", .{authorization});
     var cf: [2]std.http.Header = undefined;
@@ -215,7 +251,6 @@ fn connectRaw(allocator: std.mem.Allocator, url: []const u8, cfg: anytype) !*Cli
     if (raw_http.proxy_authorization) |authorization| allocator.free(authorization);
     return client;
 }
-
 pub fn parseUrl(url: []const u8) !Target {
     const prefix = if (std.mem.startsWith(u8, url, "wss://")) "wss://" else if (std.mem.startsWith(u8, url, "ws://")) "ws://" else return error.InvalidWebSocketUrl;
     const tls = std.mem.eql(u8, prefix, "wss://");

@@ -156,7 +156,9 @@ jobs:
       - name: Build native agent
         run: zig build -Doptimize=ReleaseSmall -Dversion=dev
       - name: Run mock Komari smoke
-        run: python3 scripts/mock_komari_smoke.py zig-out/bin/komari-agent --max-basic-info-seconds 15
+        run: |
+          python3 scripts/mock_komari_smoke.py zig-out/bin/komari-agent --max-basic-info-seconds 15
+          python3 scripts/mock_komari_smoke.py zig-out/bin/komari-agent --protocol-version 2 --max-basic-info-seconds 15
 
   linux-agent-smoke:
     name: Linux Agent Smoke (${{ matrix.name }})
@@ -297,9 +299,11 @@ jobs:
           chmod +x ./komari-agent
           if [ "${{ matrix.runner }}" = "direct" ]; then
             ./komari-agent --show-warning
+            ./komari-agent socket-timeout-smoke
           else
             command -v "${{ matrix.runner }}"
             "${{ matrix.runner }}" ./komari-agent --show-warning
+            "${{ matrix.runner }}" ./komari-agent socket-timeout-smoke
           fi
 
   build:

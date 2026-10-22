@@ -2,6 +2,7 @@
 import argparse
 import base64
 import hashlib
+import gzip
 import json
 import os
 import socket
@@ -14,8 +15,10 @@ from urllib.parse import parse_qs, urlparse
 
 
 class SmokeState:
-    def __init__(self, token):
+    def __init__(self, token, protocol_version):
         self.token = token
+        self.protocol_version = protocol_version
+        self.pong_seen = threading.Event()
         self.upload_seen = threading.Event()
         self.ws_seen = threading.Event()
         self.report_seen = threading.Event()
@@ -42,7 +45,7 @@ def make_handler(state):
 
         def do_POST(self):
             parsed = urlparse(self.path)
-            if parsed.path == "/api/clients/uploadBasicInfo":
+            if parsed.path == ("/api/clients/v2/rpc" if state.protocol_version == 2 else "/api/clients/uploadBasicInfo"):
                 self._handle_basic_info(parsed)
             elif parsed.path == "/api/clients/task/result":
                 state.error = "agent attempted to report a remote control task result"
@@ -61,7 +64,13 @@ def make_handler(state):
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length)
             try:
+                if self.headers.get("Content-Encoding") == "gzip":
+                    body = gzip.decompress(body)
                 payload = json.loads(body.decode("utf-8"))
+                if state.protocol_version == 2:
+                    if payload.get("method") != "agent.basicInfo":
+                        raise ValueError("expected agent.basicInfo")
+                    payload = payload["params"]["info"]
                 for key in ("cpu_name", "cpu_cores", "arch", "os", "mem_total", "version"):
                     if key not in payload:
                         raise ValueError(f"missing {key}")
@@ -72,11 +81,11 @@ def make_handler(state):
 
             state.uploads += 1
             state.upload_seen.set()
-            self._send(200, b"ok")
+            self._send(200, b'{"jsonrpc":"2.0","result":{"status":"ok"}}' if state.protocol_version == 2 else b"ok")
 
         def do_GET(self):
             parsed = urlparse(self.path)
-            if parsed.path == "/api/clients/report":
+            if parsed.path == ("/api/clients/v2/rpc" if state.protocol_version == 2 else "/api/clients/report"):
                 self._handle_report_ws(parsed)
             else:
                 self._send(404, b"not found")
@@ -107,15 +116,17 @@ def make_handler(state):
                 self.wfile,
                 0x1,
                 json.dumps(
-                    {
-                        "message": "exec",
-                        "task_id": "must-be-ignored",
+                    {"jsonrpc": "2.0", "method": "agent.exec", "params": {
+                        "task_id": "must-be-ignored", "command": "echo remote-control-should-be-ignored",
+                    }} if state.protocol_version == 2 else {
+                        "message": "exec", "task_id": "must-be-ignored",
                         "command": "echo remote-control-should-be-ignored",
                     }
                 ).encode("utf-8"),
             )
+            write_ws_frame(self.wfile, 0x9, b"monitor-ping")
             deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and not state.report_seen.is_set():
+            while time.monotonic() < deadline and not (state.report_seen.is_set() and state.pong_seen.is_set()):
                 try:
                     opcode, payload = read_ws_frame(self.connection, timeout=1.0)
                 except TimeoutError:
@@ -129,12 +140,19 @@ def make_handler(state):
                 if opcode == 0x9:
                     write_ws_frame(self.connection, 0xA, payload)
                     continue
+                if opcode == 0xA and payload == b"monitor-ping":
+                    state.pong_seen.set()
+                    continue
                 if opcode != 0x1:
                     continue
 
                 try:
                     message = payload.decode("utf-8", errors="replace")
                     parsed_payload = json.loads(message)
+                    if state.protocol_version == 2:
+                        if parsed_payload.get("method") != "agent.report":
+                            raise ValueError("expected agent.report; control replies are forbidden")
+                        parsed_payload = parsed_payload["params"]["report"]
                 except Exception as exc:
                     state.error = f"bad websocket json: {exc}; payload={payload!r}"
                     return
@@ -233,13 +251,13 @@ def drain_output(pipe, lines):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("agent")
-    parser.add_argument("--protocol-version", type=int, default=1)
+    parser.add_argument("--protocol-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--max-basic-info-seconds", type=float, default=15.0)
     parser.add_argument("--max-e2e-seconds", type=float, default=25.0)
     args = parser.parse_args()
 
     token = "smoke-token"
-    state = SmokeState(token)
+    state = SmokeState(token, args.protocol_version)
     server = SmokeServer(("127.0.0.1", 0), make_handler(state))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -279,7 +297,7 @@ def main():
     output_thread.start()
     try:
         while time.monotonic() - started < args.max_e2e_seconds:
-            if state.upload_seen.is_set() and state.report_seen.is_set():
+            if state.upload_seen.is_set() and state.report_seen.is_set() and state.pong_seen.is_set():
                 break
             if proc.poll() is not None:
                 raise RuntimeError(f"agent exited before e2e completion, code={proc.returncode}\n{''.join(output_lines[-80:])}")
@@ -296,8 +314,11 @@ def main():
                 f"ws={state.ws_seen.is_set()} reports={state.reports}\n{''.join(output_lines[-80:])}"
             )
 
+        if not state.pong_seen.is_set():
+            raise RuntimeError("agent did not respond to websocket ping")
+
         print(
-            "mock komari e2e ok: "
+            f"mock komari v{args.protocol_version} e2e ok: "
             f"uploads={state.uploads}, reports={state.reports}, elapsed={elapsed:.3f}s"
         )
         return 0

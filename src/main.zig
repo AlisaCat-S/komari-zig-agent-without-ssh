@@ -8,6 +8,7 @@ const common = @import("platform/common.zig");
 const provider = @import("platform/provider.zig");
 const ip = @import("protocol/ip.zig");
 const netstatic = @import("report_netstatic");
+const net = @import("net");
 const report_ws = @import("protocol/report_ws.zig");
 const v2_state = @import("protocol/v2_state.zig");
 const version = @import("version.zig");
@@ -72,6 +73,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return;
     }
 
+    if (cfg.command == .socket_timeout_smoke) {
+        try net.socketTimeoutSmoke(30_000);
+        return;
+    }
+
     if (cfg.show_warning) return;
 
     try autodiscovery.applyExistingToken(config_allocator, &cfg);
@@ -87,17 +93,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     if (cfg.month_rotate != 0) {
-        netstatic.startOrContinue() catch |err| try stdout.print("Failed to start netstatic monitoring: {s}\n", .{@errorName(err)});
-        const nics = provider.interfaceList(allocator, cfg.include_nics, cfg.exclude_nics) catch &.{};
-        netstatic.setNewConfig(.{ .nics = nics }) catch |err| try stdout.print("Failed to set netstatic config: {s}\n", .{@errorName(err)});
-        netstatic_active.store(true, .release);
+        if (netstatic.startOrContinue()) |_| {
+            const nics = provider.interfaceList(allocator, cfg.include_nics, cfg.exclude_nics) catch &.{};
+            netstatic.setNewConfig(.{ .nics = nics }) catch |err| try stdout.print("Failed to set netstatic config: {s}\n", .{@errorName(err)});
+            netstatic_active.store(true, .release);
+        } else |err| {
+            try stdout.print("Failed to start netstatic monitoring: {s}; existing state file was not modified\n", .{@errorName(err)});
+        }
     }
-    defer if (cfg.month_rotate != 0) netstatic.stop() catch {};
+    defer if (netstatic_active.load(.acquire)) netstatic.stop() catch {};
 
     printMonitoringLists(allocator, cfg) catch {};
 
     if (shutdown_requested.load(.acquire)) return;
-    const startup_outcome = try runForegroundBasicInfoUpload(allocator, cfg, false, .startup);
+    var startup_outcome = try runForegroundBasicInfoUpload(allocator, cfg, false, .startup);
+    startup_outcome = try refreshAutoDiscoveryAfterUnauthorized(config_allocator, &cfg, allocator, startup_outcome);
     if (shutdown_requested.load(.acquire)) return;
     startBasicInfoLoop(allocator, cfg, basic_info_flow.shouldStartBackgroundLoopImmediately(startup_outcome));
 
@@ -111,6 +121,23 @@ pub fn main(init: std.process.Init.Minimal) !void {
         _ = try runForegroundBasicInfoUpload(allocator, cfg, false, .websocket_reconnect);
     }
     try stdout.writeAll("shutting down gracefully...\n");
+}
+
+fn refreshAutoDiscoveryAfterUnauthorized(
+    config_allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    allocator: std.mem.Allocator,
+    outcome: basic_info_flow.ForegroundUploadOutcome,
+) !basic_info_flow.ForegroundUploadOutcome {
+    const err = switch (outcome) {
+        .failure => |e| e,
+        else => return outcome,
+    };
+    if (err != error.HttpUnauthorized) return outcome;
+    if (cfg.auto_discovery_key.len == 0) return outcome;
+    debug.log("basic info unauthorized with auto-discovery; invalidating cached token", .{});
+    try autodiscovery.invalidateAndRegister(config_allocator, cfg);
+    return try runForegroundBasicInfoUpload(allocator, cfg.*, false, .startup);
 }
 
 fn installSignalHandlers() void {
@@ -174,8 +201,13 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config, allow_e
     var info = try provider.basicInfo(scratch);
     debug.log("basic info collected: local_ipv4={s} local_ipv6={s}", .{ info.ipv4, info.ipv6 });
     try applyIpConfig(scratch, cfg, &info, allow_external_ip_lookup);
-    if (!allow_external_ip_lookup and info.ipv4.len == 0) {
-        debug.log("deferring foreground basic info upload until public IP refresh because IPv4 is empty", .{});
+    if (basic_info_flow.shouldDeferForPublicIPv4(
+        allow_external_ip_lookup,
+        cfg.get_ip_addr_from_nic,
+        cfg.custom_ipv4,
+        ip.isPubliclyRoutableIPv4(info.ipv4),
+    )) {
+        debug.log("deferring foreground basic info upload until public IP refresh because IPv4 is not publicly routable: {s}", .{info.ipv4});
         return error.BasicInfoDeferredUntilPublicIp;
     }
     const info_json = try basic_info.allocBasicInfoJson(scratch, info, true, true);

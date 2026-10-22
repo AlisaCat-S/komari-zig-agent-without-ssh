@@ -1,6 +1,6 @@
 {
   "endpoint": "https://panel.example",
   "token": "replace-with-an-agent-token",
-  "interval": 1.0,
+  "interval": 3.0,
   "protocol_version": 2
 }

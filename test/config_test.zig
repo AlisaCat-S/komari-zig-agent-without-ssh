@@ -3,7 +3,7 @@ const config = @import("config");
 
 test "defaults keep monitoring enabled without remote-control switches" {
     const cfg = config.Config.default();
-    try std.testing.expectEqual(@as(f64, 1.0), cfg.interval);
+    try std.testing.expectEqual(@as(f64, 3.0), cfg.interval);
     try std.testing.expectEqual(@as(i32, 3), cfg.max_retries);
     try std.testing.expectEqual(@as(i32, 5), cfg.reconnect_interval);
     try std.testing.expectEqual(@as(i32, 2), cfg.protocol_version);
@@ -16,9 +16,9 @@ test "monitoring cli options parse" {
     defer arena.deinit();
 
     const args = [_][]const u8{
-        "komari-agent", "-t", "tok", "-e", "https://panel.example", "-i", "2.5",
-        "-r",           "7",  "-c", "11", "--include-nics", "eth0,wlan0",
-        "--exclude-nics", "docker0", "--month-rotate", "8", "--gpu",
+        "komari-agent", "-t",             "tok", "-e",    "https://panel.example", "-i",         "2.5",
+        "-r",           "7",              "-c",  "11",    "--include-nics",        "eth0,wlan0", "--exclude-nics",
+        "docker0",      "--month-rotate", "8",   "--gpu",
     };
     const cfg = try config.parseArgs(arena.allocator(), &args);
     try std.testing.expectEqualStrings("tok", cfg.token);
@@ -85,4 +85,11 @@ test "config normalize defaults protocol version zero and validates values" {
     cfg.protocol_version = 2;
     cfg.prefer_ip_version = "5";
     try std.testing.expectError(error.InvalidPreferIpVersion, cfg.normalize());
+}
+
+test "socket timeout diagnostic subcommand is recognized" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try config.parseArgs(arena.allocator(), &.{ "komari-agent", "socket-timeout-smoke" });
+    try std.testing.expectEqual(config.Command.socket_timeout_smoke, cfg.command);
 }
