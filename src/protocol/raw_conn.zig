@@ -14,6 +14,21 @@ pub const AddressFamily = enum {
 
 pub const tls_ca_bundle_storage = if (std.http.Client.disable_tls) "disabled" else "per_connection";
 
+/// FreeBSD CA bundle files, ordered like Go crypto/x509 root_bsd.go.
+/// Zig std only tries `/etc/ssl/cert.pem` (ziglang/zig#20516), which misses
+/// ca_root_nss installs that Go finds first under `/usr/local/...`.
+pub const freebsd_ca_cert_file_paths = [_][]const u8{
+    "/usr/local/etc/ssl/cert.pem",
+    "/etc/ssl/cert.pem",
+    "/usr/local/share/certs/ca-root-nss.crt",
+};
+
+/// FreeBSD CA directories, matching Go crypto/x509 root_bsd.go.
+pub const freebsd_ca_cert_dir_paths = [_][]const u8{
+    "/etc/ssl/certs",
+    "/usr/local/share/certs",
+};
+
 pub const RawConn = struct {
     allocator: std.mem.Allocator,
     stream: net.Stream,
@@ -153,8 +168,76 @@ fn loadCaBundle() !std.crypto.Certificate.Bundle {
     if (std.http.Client.disable_tls) return error.TlsInitializationFailed;
     var bundle: std.crypto.Certificate.Bundle = .empty;
     errdefer bundle.deinit(std.heap.page_allocator);
-    try bundle.rescan(std.heap.page_allocator, std.Options.debug_io, std.Io.Timestamp.now(std.Options.debug_io, .real));
+    if (builtin.os.tag == .freebsd) {
+        try loadCaBundleFreeBsd(&bundle);
+    } else {
+        try bundle.rescan(std.heap.page_allocator, std.Options.debug_io, std.Io.Timestamp.now(std.Options.debug_io, .real));
+    }
     return bundle;
+}
+
+fn loadCaBundleFreeBsd(bundle: *std.crypto.Certificate.Bundle) !void {
+    try loadCaBundleFromCandidatePaths(
+        bundle,
+        std.heap.page_allocator,
+        std.Options.debug_io,
+        std.Io.Timestamp.now(std.Options.debug_io, .real),
+        &freebsd_ca_cert_file_paths,
+        &freebsd_ca_cert_dir_paths,
+    );
+}
+
+/// Load CA certs by trying file paths then directories (Go root_bsd-style).
+/// Files: stop after the first successful load. Directories: always scan all.
+/// Continues on FileNotFound/AccessDenied for individual candidates so a
+/// locked `/etc/ssl/cert.pem` does not block ca_root_nss under `/usr/local`.
+pub fn loadCaBundleFromCandidatePaths(
+    bundle: *std.crypto.Certificate.Bundle,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    now: std.Io.Timestamp,
+    file_paths: []const []const u8,
+    dir_paths: []const []const u8,
+) !void {
+    bundle.bytes.clearRetainingCapacity();
+    bundle.map.clearRetainingCapacity();
+
+    var last_err: ?anyerror = null;
+    var loaded_file = false;
+    var loaded_dir = false;
+
+    // Files: stop after the first successful load (Go crypto/x509 root_bsd.go).
+    for (file_paths) |cert_file_path| {
+        if (bundle.addCertsFromFilePathAbsolute(gpa, io, now, cert_file_path)) |_| {
+            loaded_file = true;
+            debug.log("tls ca bundle loaded from file {s}", .{cert_file_path});
+            break;
+        } else |err| switch (err) {
+            error.FileNotFound, error.AccessDenied => {
+                last_err = err;
+                continue;
+            },
+            else => |e| return e,
+        }
+    }
+
+    // Directories: always scan all candidates, even after a successful file load.
+    for (dir_paths) |cert_dir_path| {
+        if (bundle.addCertsFromDirPathAbsolute(gpa, io, now, cert_dir_path)) |_| {
+            loaded_dir = true;
+            debug.log("tls ca bundle loaded from dir {s}", .{cert_dir_path});
+        } else |err| switch (err) {
+            error.FileNotFound, error.AccessDenied => {
+                last_err = err;
+                continue;
+            },
+            else => |e| return e,
+        }
+    }
+
+    if (!loaded_file and !loaded_dir) return last_err orelse error.FileNotFound;
+
+    bundle.bytes.shrinkAndFree(gpa, bundle.bytes.items.len);
 }
 
 pub fn rescanCaBundleForTest() !void {
@@ -163,7 +246,16 @@ pub fn rescanCaBundleForTest() !void {
     defer bundle.deinit(std.heap.page_allocator);
 }
 
-fn familyMatches(addr: net.Address, family: AddressFamily) bool {
+pub fn resolveAddresses(
+    allocator: std.mem.Allocator,
+    host: []const u8,
+    port: u16,
+    custom_dns: []const u8,
+) ![]net.Address {
+    return dns.resolveHost(allocator, host, port, custom_dns);
+}
+
+pub fn familyMatches(addr: net.Address, family: AddressFamily) bool {
     return switch (family) {
         .any => true,
         .ipv4 => net.isIpv4(addr),
@@ -176,7 +268,7 @@ fn connectStreamAddress(addr: net.Address, timeout_ms: u64) !net.Stream {
     return net.connectWithTimeout(addr, timeout_ms);
 }
 
-fn formatAddress(buf: *[96]u8, addr: net.Address) []const u8 {
+pub fn formatAddress(buf: *[96]u8, addr: net.Address) []const u8 {
     var writer: std.Io.Writer = .fixed(buf);
     addr.format(&writer) catch return "<invalid-address>";
     return writer.buffered();

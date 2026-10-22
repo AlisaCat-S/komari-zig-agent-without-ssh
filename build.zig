@@ -111,6 +111,8 @@ pub fn build(b: *std.Build) void {
         "test/dns_idna_test.zig",
         "test/basic_info_flow_test.zig",
         "test/linux_basic_info_test.zig",
+        "test/freebsd_basic_info_test.zig",
+        "src/platform/gpu.zig",
         "test/windows_provider_test.zig",
         "test/disk_filter_test.zig",
         "test/network_filter_test.zig",
@@ -120,6 +122,7 @@ pub fn build(b: *std.Build) void {
         "test/v2_state_test.zig",
         "test/ws_client_test.zig",
         "test/raw_conn_test.zig",
+        "test/raw_errno_test.zig",
         "test/thread_stack_test.zig",
         "test/report_interval_test.zig",
         "test/netstatic_test.zig",
@@ -159,6 +162,13 @@ fn addTest(
     tests.root_module.addOptions("build_options", opts);
     addCompatImports(tests.root_module, compat_module, net_module);
     tests.root_module.addImport("debug", debug_module);
+    // Match the shipped binaries, which always link libc. Without this the suite runs
+    // with `builtin.link_libc == false`, where `std.posix.errno` resolves to the
+    // correct `std.os.linux.errno` and whole classes of libc-dependent bugs (see
+    // test/raw_errno_test.zig) become invisible to the tests.
+    if (target.result.os.tag != .windows) {
+        tests.root_module.link_libc = true;
+    }
     const report_netstatic = b.createModule(.{
         .root_source_file = b.path("src/report/netstatic.zig"),
         .target = target,
@@ -242,6 +252,15 @@ fn addTest(
     platform_linux.addImport("debug", debug_module);
     platform_linux.addImport("report_netstatic", report_netstatic);
     tests.root_module.addImport("platform_linux", platform_linux);
+    const platform_freebsd = b.createModule(.{
+        .root_source_file = b.path("src/platform/freebsd.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addCompatImports(platform_freebsd, compat_module, net_module);
+    platform_freebsd.addImport("debug", debug_module);
+    platform_freebsd.addImport("report_netstatic", report_netstatic);
+    tests.root_module.addImport("platform_freebsd", platform_freebsd);
     const protocol_ip = b.createModule(.{
         .root_source_file = b.path("src/protocol/ip.zig"),
         .target = target,
@@ -265,6 +284,7 @@ fn addTest(
     addCompatImports(protocol_ws_client, compat_module, net_module);
     protocol_ws_client.addImport("debug", debug_module);
     protocol_ws_client.addImport("idna", idna_module);
+    protocol_ws_client.addImport("dns", dns_module);
     tests.root_module.addImport("protocol_ws_client", protocol_ws_client);
     tests.root_module.addImport("protocol_report_timing", b.createModule(.{
         .root_source_file = b.path("src/protocol/report_timing.zig"),

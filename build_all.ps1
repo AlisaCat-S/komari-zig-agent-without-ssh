@@ -13,8 +13,8 @@ Build-One linux amd64 x86_64-linux-musl
 Build-One linux arm64 aarch64-linux-musl
 Build-One linux 386 x86-linux-musl
 Build-One linux arm arm-linux-musleabi
-Build-One linux mips mips-linux-musl
-Build-One linux mipsel mipsel-linux-musl
+Build-One linux mips mips-linux-musleabi
+Build-One linux mipsel mipsel-linux-musleabi
 Build-One linux mips64 mips64-linux-muslabi64
 Build-One linux mips64el mips64el-linux-muslabi64
 Build-One linux riscv64 riscv64-linux-musl

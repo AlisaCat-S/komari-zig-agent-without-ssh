@@ -12,6 +12,12 @@
 
 Agent 仅向配置的面板发起连接并上报监控数据。收到的服务端 WebSocket 帧会被丢弃，仅处理协议级 Ping/Pong 以保持连接；不会解析或执行面板任务。
 
+## 上游同步
+
+已同步 [luodaoyi/komari-zig-agent 的 `b7021ff`](https://github.com/luodaoyi/komari-zig-agent/commit/b7021ff3d62a84bf64b671d47455cd594753b7f9)（2026-10-22）。本次包含多地址 HTTP/WebSocket 故障转移、自动发现过期 Token 重新注册、FreeBSD CA 与本机 IP 修复、月流量持久化、容器磁盘去重及 GPU 采集改进。
+
+默认上报间隔随上游改为 **3 秒**；已有配置或 `--interval` 指定的值不变。继续保留本 fork 的仅监控边界、强制 TLS 证书校验和本仓库安装器，不恢复远程执行、SSH 或自动更新。
+
 ## 构建
 
 项目的 CI 工具链为 Zig `0.16.0`：

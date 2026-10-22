@@ -228,3 +228,16 @@ fn decompressGzip(allocator: std.mem.Allocator, compressed: []const u8) ![]u8 {
     _ = try decompress.reader.streamRemaining(&out.writer);
     return try out.toOwnedSlice();
 }
+
+test "failed v1 fallback and reconnect prefer requested v2" {
+    const report_ws = @import("src/protocol/report_ws.zig");
+    basic_info.initRequestedProtocolVersionForTest(2);
+    defer basic_info.resetConnectionProtocolVersionForTest();
+    report_ws.applyV1FallbackConnectResultForTest(true);
+    try std.testing.expectEqual(@as(i32, 1), report_ws.uploadProtocolVersionForTest());
+    report_ws.applyV1FallbackConnectResultForTest(false);
+    try std.testing.expectEqual(@as(i32, 2), report_ws.uploadProtocolVersionForTest());
+    report_ws.applyV1FallbackConnectResultForTest(true);
+    report_ws.prepareReconnectCycleForTest();
+    try std.testing.expectEqual(@as(i32, 2), report_ws.uploadProtocolVersionForTest());
+}
