@@ -118,9 +118,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     while (!shutdown_requested.load(.acquire)) {
         report_ws.loop(allocator, cfg, &shutdown_requested) catch |err| {
+            if (err == error.ShutdownRequested) break;
             try stdout.print("Report websocket exited: {s}\n", .{@errorName(err)});
         };
-        if (shutdown_requested.load(.acquire)) break;
+        // Pace retry batches too, even when max_retries=0 skips the inner retries.
+        if (report_ws.sleepOrStop(report_ws.reconnectSleepSeconds(cfg.reconnect_interval), &shutdown_requested)) break;
         _ = try runForegroundBasicInfoUpload(allocator, cfg, false, .websocket_reconnect);
     }
     try stdout.writeAll("shutting down gracefully...\n");

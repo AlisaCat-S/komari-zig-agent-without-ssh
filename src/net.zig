@@ -15,6 +15,8 @@ fn rawErrno(rc: usize) std.posix.E {
 pub const net = std.Io.net;
 pub const Address = net.IpAddress;
 pub const Stream = net.Stream;
+pub const Reader = if (builtin.os.tag == .windows) Stream.Reader else @import("socket_io.zig").Reader;
+pub const Writer = if (builtin.os.tag == .windows) Stream.Writer else @import("socket_io.zig").Writer;
 
 const LinuxSocketTimeval = extern struct {
     sec: c_long,
@@ -112,12 +114,14 @@ pub fn close(stream: Stream) void {
     stream.close(std.Options.debug_io);
 }
 
-pub fn reader(stream: Stream, buffer: []u8) Stream.Reader {
-    return stream.reader(std.Options.debug_io, buffer);
+pub fn reader(stream: Stream, buffer: []u8) Reader {
+    if (builtin.os.tag == .windows) return stream.reader(std.Options.debug_io, buffer);
+    return .init(stream, buffer);
 }
 
-pub fn writer(stream: Stream, buffer: []u8) Stream.Writer {
-    return stream.writer(std.Options.debug_io, buffer);
+pub fn writer(stream: Stream, buffer: []u8) Writer {
+    if (builtin.os.tag == .windows) return stream.writer(std.Options.debug_io, buffer);
+    return .init(stream, buffer);
 }
 
 pub const SockAddr = struct {

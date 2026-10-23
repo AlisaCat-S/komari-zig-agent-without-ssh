@@ -145,6 +145,7 @@ pub fn build(b: *std.Build) void {
         "test/v2_state_test.zig",
         "test/ws_client_test.zig",
         "test/raw_conn_test.zig",
+        "test/socket_timeout_test.zig",
         "test/raw_errno_test.zig",
         "test/thread_stack_test.zig",
         "test/report_interval_test.zig",

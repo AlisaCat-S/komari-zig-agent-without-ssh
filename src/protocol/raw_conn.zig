@@ -32,8 +32,8 @@ pub const freebsd_ca_cert_dir_paths = [_][]const u8{
 pub const RawConn = struct {
     allocator: std.mem.Allocator,
     stream: net.Stream,
-    stream_reader: net.Stream.Reader,
-    stream_writer: net.Stream.Writer,
+    stream_reader: net.Reader,
+    stream_writer: net.Writer,
     tls_client: ?std.crypto.tls.Client = null,
     socket_read_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,
     socket_write_buf: [std.crypto.tls.Client.min_buffer_len]u8 = undefined,

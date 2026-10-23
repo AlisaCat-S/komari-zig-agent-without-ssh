@@ -144,7 +144,7 @@ fn isStopRequested(stop_requested: ?*const std.atomic.Value(bool)) bool {
     return ptr.load(.acquire);
 }
 
-fn sleepOrStop(seconds: u64, stop_requested: ?*const std.atomic.Value(bool)) bool {
+pub fn sleepOrStop(seconds: u64, stop_requested: ?*const std.atomic.Value(bool)) bool {
     var slept: u64 = 0;
     while (slept < seconds) : (slept += 1) {
         if (isStopRequested(stop_requested)) return true;

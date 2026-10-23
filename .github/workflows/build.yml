@@ -194,8 +194,14 @@ jobs:
         run: |
           python3 scripts/mock_komari_smoke.py zig-out/bin/komari-agent --max-basic-info-seconds 15
           python3 scripts/mock_komari_smoke.py zig-out/bin/komari-agent --protocol-version 2 --max-basic-info-seconds 15
+      - name: Check reconnect backoff and shutdown
+        run: python3 scripts/test_reconnect_runtime.py zig-out/bin/komari-agent
       - name: Check heartbeat and monthly state with glibc
         run: python3 scripts/test_monitoring_runtime.py zig-out/bin/komari-agent
+      - name: Check Debug WebSocket timeouts and recovery
+        run: |
+          zig build -Doptimize=Debug -Dversion=dev --prefix zig-out/timeout-debug
+          python3 scripts/test_websocket_timeout.py zig-out/timeout-debug/bin/komari-agent
 
   linux-agent-smoke:
     name: Linux Agent Smoke (${{ matrix.name }})
