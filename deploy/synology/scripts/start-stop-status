@@ -1,0 +1,46 @@
+#!/bin/sh
+. "$(dirname "$0")/common"
+BINARY_REAL=$(readlink -f "$BINARY")
+
+start_agent() {
+    if running; then return 0; fi
+    [ -s "$CONFIG" ] || fail 'Agent configuration is missing. Reinstall the package to configure it.'
+    [ -x "$BINARY" ] || fail 'Agent binary is missing or not executable.'
+    mkdir -p "$PKGVAR/state"
+    cd "$PKGVAR/state"
+    export KOMARI_STATUS_FILE="$PKGTMP/status.json"
+    # Keep the previous startup log, and keep the token out of the process command line.
+    [ ! -f "$LOGFILE" ] || mv -f "$LOGFILE" "$LOGFILE.previous"
+    nohup "$BINARY" --config "$CONFIG" </dev/null >"$LOGFILE" 2>&1 &
+    PID=$!
+    sleep 1
+    BIRTH=$(sed 's/^.*) //' "/proc/$PID/stat" 2>/dev/null | awk '{print $20}')
+    if ! process_matches; then
+        wait "$PID" 2>/dev/null || true
+        fail 'Agent exited during startup. Check the package tmp/agent.log.'
+    fi
+    printf '%s %s\n' "$PID" "$BIRTH" > "$PIDFILE"
+}
+
+stop_agent() {
+    if ! running; then rm -f "$PIDFILE"; return 0; fi
+    kill -TERM "$PID"
+    count=0
+    while process_matches; do
+        [ "$count" -lt 30 ] || fail 'Agent did not stop within 30 seconds; it has not been force-killed.'
+        sleep 1
+        count=$((count + 1))
+    done
+    rm -f "$PIDFILE"
+}
+
+case "${1:-}" in
+    start) start_agent ;;
+    stop) stop_agent ;;
+    restart) stop_agent; start_agent ;;
+    status) if running; then exit 0; else exit 3; fi ;;
+    prestart) [ -s "$CONFIG" ] && [ -x "$BINARY" ] ;;
+    prestop) exit 0 ;;
+    log) printf '%s\n' "$LOGFILE" ;;
+    *) printf 'Usage: %s {start|stop|restart|status|prestart|prestop|log}\n' "$0" >&2; exit 1 ;;
+esac

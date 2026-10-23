@@ -1,0 +1,11 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "tool": [{
+    "relpath": "ui/api.cgi",
+    "user": "package",
+    "group": "package",
+    "permission": "4755"
+  }]
+}

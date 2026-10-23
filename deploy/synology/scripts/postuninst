@@ -1,0 +1,8 @@
+#!/bin/sh
+. "$(dirname "$0")/common"
+if [ "${SYNOPKG_PKG_STATUS:-}" = UNINSTALL ]; then
+    # Only remove this package's known files. Upgrades must preserve all settings and state.
+    rm -f "$CONFIG" "$CONFIG.new" "$PKGVAR/state/net_static.json" "$PKGVAR/state/net_static.json.bak" "$PKGVAR/state/net_static.json.tmp"
+    rm -f "$PKGVAR/config.json.previous" "$PKGVAR/config.previous.new" "$PKGVAR/config.ui.new" "$PKGVAR/ui.lock"
+    rmdir "$PKGVAR/state" 2>/dev/null || true
+fi

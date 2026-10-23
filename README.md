@@ -60,6 +60,19 @@ zig build -Doptimize=ReleaseSmall -Dversion=dev
 | Windows ARM64 | [komari-agent-windows-arm64.exe](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/komari-agent-windows-arm64.exe) |
 | Windows x86 | [komari-agent-windows-386.exe](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest/download/komari-agent-windows-386.exe) |
 
+## 群晖 DSM 套件安装（实验性）
+
+DSM 7.0 及以上可使用 `.spk` 套件，无需 SSH、Docker 或运行安装脚本：
+
+1. 从 [Release](https://github.com/AlisaCat-S/komari-zig-agent-without-ssh/releases/latest) 下载匹配 CPU 的 `komari-agent-dsm7-amd64.spk`、`komari-agent-dsm7-arm64.spk` 或 `komari-agent-dsm7-arm.spk`。
+2. 打开 **套件中心 → 手动安装**，选择 `.spk`。这是未签名的第三方套件，请确认来源后再接受 DSM 的提示。
+3. 在安装向导中填写面板地址、Agent Token 和上报间隔，完成后启动套件。
+4. 以 DSM 管理员身份从 **主菜单 → Komari Monitor** 打开管理页，修改连接设置、网卡及挂载点，并查看连接、最近发送、报告计数和错误状态。
+
+管理页使用 DSM 登录会话，不另开端口，Token 不回显；运行中保存配置会重启 Agent，已停止时仅保存。状态每 3 秒刷新，WebSocket 发送与 HTTP 服务端确认分别记录。套件以 DSM 专用低权限用户运行，可在套件中心启停，升级保留配置和月流量状态。卸载会删除套件配置及月流量状态。已有脚本版 Agent 时，请先停止它，避免重复上报。
+
+自动构建和发布流程已接入；套件结构及 Linux 上的生命周期测试不替代 DSM 实机验证，目前按实验性功能提供。架构选择、升级、排错与本地构建见 [群晖套件说明](docs/synology.md)。
+
 ## 安装脚本
 
 ### 一键安装（Linux / FreeBSD）

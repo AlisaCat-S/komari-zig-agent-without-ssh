@@ -1,0 +1,4 @@
+#!/bin/sh
+. "$(dirname "$0")/common"
+[ -s "$CONFIG" ] || fail 'Existing configuration is missing; upgrade cannot continue.'
+# DSM keeps PKGVAR across upgrades; do not copy secrets into a temporary upgrade folder.

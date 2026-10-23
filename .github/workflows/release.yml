@@ -184,8 +184,15 @@ jobs:
       - name: Build
         run: |
           set -eu
-          zig build -Doptimize=ReleaseSmall -Dversion=${{ needs.prepare.outputs.tag }} -Dtarget=${{ matrix.target }}
+          dsm_flags=""
+          if [ "${{ matrix.os }}" = linux ]; then
+            case "${{ matrix.arch }}" in amd64|arm64|arm) dsm_flags="-Ddsm-ui=true" ;; esac
+          fi
+          zig build -Doptimize=ReleaseSmall -Dversion=${{ needs.prepare.outputs.tag }} -Dtarget=${{ matrix.target }} $dsm_flags
           mkdir -p dist
+          if [ -n "$dsm_flags" ]; then
+            cp zig-out/bin/komari-dsm-api.cgi "dist/komari-dsm-api-linux-${{ matrix.arch }}.cgi"
+          fi
           binary="komari-agent"
           asset="komari-agent-${{ matrix.os }}-${{ matrix.arch }}"
           if [ "${{ matrix.os }}" = "windows" ]; then
@@ -196,7 +203,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}*
+          path: dist/*
           if-no-files-found: error
 
   publish:
@@ -218,6 +225,18 @@ jobs:
           cp install.ps1 dist/install.ps1
           cp deploy/komari-agent.service dist/komari-agent.service
           cp deploy/config.json.example dist/config.json.example
+      - name: Build DSM 7 packages
+        env:
+          AGENT_VERSION: ${{ needs.prepare.outputs.tag }}
+          PACKAGE_BUILD: ${{ github.run_number }}
+        run: |
+          set -eu
+          python3 scripts/test_synology.py -v
+          for arch in amd64 arm64 arm; do
+            python3 scripts/build_synology_spk.py --binary "dist/komari-agent-linux-$arch" \
+              --cgi "dist/komari-dsm-api-linux-$arch.cgi" --arch "$arch" --version "$AGENT_VERSION" --build-number "$PACKAGE_BUILD" --output-dir dist
+          done
+          KOMARI_TEST_AGENT=dist/komari-agent-linux-amd64 KOMARI_TEST_CGI=dist/komari-dsm-api-linux-amd64.cgi python3 scripts/test_synology.py -v
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -11,6 +11,7 @@ const ws_client = @import("ws_client.zig");
 const compat = @import("compat");
 const timing = @import("report_timing.zig");
 const thread_stacks = @import("../thread_stacks.zig");
+const local_status = @import("../local_status.zig");
 
 /// Outbound monitoring reports. Server-originated frames are discarded.
 const report_stack_buffer_size = 4096;
@@ -116,18 +117,24 @@ pub fn loop(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*
         };
         defer ws.close(allocator);
         defer v2_state.resetConnectionProtocolVersion();
+        local_status.connection("connected", "websocket", v2_state.uploadProtocolVersion());
         try startDiscardReader(allocator, ws);
         try startHeartbeat(allocator, ws);
 
         while (!isStopRequested(stop_requested)) {
             const report_start_ms = compat.milliTimestamp();
             writeReportOnce(allocator, ws, cfg) catch |err| {
+                local_status.failure(err);
                 try stdout.print("WebSocket write failed: {s}\n", .{@errorName(err)});
                 break;
             };
+            local_status.sent(false);
             const sleep_ms = remainingSleepMs(report_start_ms, reportIntervalMs(cfg.interval), compat.milliTimestamp());
             if (sleepOrStopMs(sleep_ms, stop_requested, ws)) return;
-            if (ws.closed.load(.acquire)) break;
+            if (ws.closed.load(.acquire)) {
+                local_status.failure(error.WebSocketClosed);
+                break;
+            }
         }
     }
 }
@@ -183,6 +190,7 @@ fn connectReportWs(allocator: std.mem.Allocator, cfg: config.Config) !*ws_client
 }
 
 fn runPostFallback(allocator: std.mem.Allocator, cfg: config.Config, stop_requested: ?*const std.atomic.Value(bool)) !?*ws_client.Client {
+    local_status.connection("reconnecting", "http", 2);
     const report_interval_ms = reportIntervalMs(cfg.interval);
     const reconnect_interval_ms = @as(u64, @intCast(reconnectSleepSeconds(cfg.reconnect_interval))) * std.time.ms_per_s;
     var last_report_ms = compat.milliTimestamp() - @as(i64, @intCast(report_interval_ms));
@@ -193,6 +201,7 @@ fn runPostFallback(allocator: std.mem.Allocator, cfg: config.Config, stop_reques
         if (@as(u64, @intCast(@max(now_ms - last_report_ms, 0))) >= report_interval_ms) {
             last_report_ms = now_ms;
             postV2ReportOnce(allocator, cfg) catch |err| {
+                local_status.failure(err);
                 if (v2_state.noteV2AttemptResult(2, err).fallback) {
                     v2_state.setConnectionProtocolVersion(1);
                     return err;
@@ -215,8 +224,10 @@ fn connectReportWsWithRetries(allocator: std.mem.Allocator, cfg: config.Config, 
     var retry: i32 = 0;
     while (retry <= cfg.max_retries) : (retry += 1) {
         if (isStopRequested(stop_requested)) return error.ShutdownRequested;
+        local_status.connection("connecting", "websocket", v2_state.uploadProtocolVersion());
         debug.log("report websocket connect attempt {d} to {s}", .{ retry + 1, cfg.endpoint });
         const ws = connectReportWs(allocator, cfg) catch |err| {
+            local_status.failure(err);
             debug.log("report websocket connect attempt {d} failed: {s}", .{ retry + 1, @errorName(err) });
             if (retry >= cfg.max_retries) return err;
             if (sleepOrStop(reconnectSleepSeconds(cfg.reconnect_interval), stop_requested)) return error.ShutdownRequested;
@@ -291,6 +302,7 @@ fn postV2ReportOnce(allocator: std.mem.Allocator, cfg: config.Config) !void {
     const request = try v2.allocReportRequest(allocator, request_id, payload);
     defer allocator.free(request);
     try postV2Request(allocator, cfg, request);
+    local_status.sent(true);
     v2_state.resetV2ProtocolFailures(2);
 }
 

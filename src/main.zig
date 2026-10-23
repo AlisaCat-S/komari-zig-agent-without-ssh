@@ -16,6 +16,7 @@ const builtin = @import("builtin");
 const compat = @import("compat");
 const runtime = @import("runtime");
 const thread_stacks = @import("thread_stacks.zig");
+const local_status = @import("local_status.zig");
 
 /// Agent entrypoint that wires config, reporting, and shutdown.
 pub const std_options: std.Options = .{
@@ -92,6 +93,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         try stdout.writeAll("Usage: komari-agent --endpoint <url> --token <token>\n");
         return;
     }
+    local_status.init();
 
     if (cfg.month_rotate != 0) {
         if (netstatic.startOrContinue()) |_| {
@@ -215,6 +217,7 @@ fn uploadBasicInfoOnce(allocator: std.mem.Allocator, cfg: config.Config, allow_e
     try stdout.print("Basic info ready: {d} bytes\n", .{info_json.len});
     debug.log("basic info prepared: upload_bytes={d} final_ipv4={s} final_ipv6={s}", .{ info_json.len, info.ipv4, info.ipv6 });
     try basic_info.upload(scratch, cfg, info);
+    local_status.basicInfoConfirmed();
 }
 
 fn runForegroundBasicInfoUpload(
@@ -258,7 +261,9 @@ fn basicInfoLoop(allocator: std.mem.Allocator, cfg: config.Config, start_immedia
         applyIpConfig(scratch, cfg, &info, true) catch {};
         basic_info.upload(scratch, cfg, info) catch |err| {
             debug.log("background basic info upload failed: {s}", .{@errorName(err)});
+            continue;
         };
+        local_status.basicInfoConfirmed();
     }
 }
 

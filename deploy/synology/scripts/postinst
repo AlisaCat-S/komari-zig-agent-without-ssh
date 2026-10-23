@@ -1,0 +1,37 @@
+#!/bin/sh
+. "$(dirname "$0")/common"
+if [ "${SYNOPKG_PKG_STATUS:-INSTALL}" = UPGRADE ]; then
+    [ -s "$CONFIG" ] || fail 'Existing configuration is missing; upgrade cannot continue.'
+    exit 0
+fi
+validate_settings
+mkdir -p "$PKGVAR/state"
+chmod 0700 "$PKGVAR/state"
+# Read untrusted wizard input as data, not shell/awk source. No jq/Python dependency on DSM.
+export wizard_endpoint wizard_token wizard_interval
+awk '
+function quote(s, i, c, j, control, out) {
+    out="\""
+    for (i=1; i<=length(s); i++) {
+        c=substr(s,i,1)
+        if (c=="\"" || c=="\\") out=out "\\" c
+        else {
+            control=0
+            for (j=1; j<32; j++) if (c==sprintf("%c",j)) {
+                out=out sprintf("\\u%04x",j); control=1; break
+            }
+            if (!control) out=out c
+        }
+    }
+    return out "\""
+}
+BEGIN {
+    print "{"
+    print "  \"endpoint\": " quote(ENVIRON["wizard_endpoint"]) ","
+    print "  \"token\": " quote(ENVIRON["wizard_token"]) ","
+    print "  \"interval\": " ENVIRON["wizard_interval"] ","
+    print "  \"protocol_version\": 2"
+    print "}"
+}' > "$CONFIG.new"
+chmod 0600 "$CONFIG.new"
+mv -f "$CONFIG.new" "$CONFIG"

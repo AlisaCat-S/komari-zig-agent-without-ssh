@@ -1,0 +1,5 @@
+#!/bin/sh
+. "$(dirname "$0")/common"
+if [ "${SYNOPKG_PKG_STATUS:-INSTALL}" != UPGRADE ]; then
+    validate_settings
+fi

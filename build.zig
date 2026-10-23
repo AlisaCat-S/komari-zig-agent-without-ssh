@@ -94,6 +94,29 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("report_netstatic", exe_report_netstatic);
     b.installArtifact(exe);
 
+    if (b.option(bool, "dsm-ui", "Build the DSM configuration CGI") orelse false) {
+        if (target.result.os.tag != .linux) @panic("DSM UI requires a Linux target");
+        const dsm = b.addExecutable(.{
+            .name = "komari-dsm-api.cgi",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/dsm_cgi.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        dsm.root_module.addImport("compat", compat_module);
+        dsm.root_module.addImport("runtime", runtime_module);
+        const dsm_opts = b.addOptions();
+        // Test paths are compile-time only; production does not accept environment overrides.
+        const test_root = b.option([]const u8, "dsm-test-root", "Compile an isolated CGI test fixture (never distribute)");
+        dsm_opts.addOption([]const u8, "root", test_root orelse "/var/packages/komari-agent");
+        dsm_opts.addOption([]const u8, "auth", if (test_root) |p| b.fmt("{s}/authenticate", .{p}) else "/usr/syno/synoman/webman/modules/authenticate.cgi");
+        dsm_opts.addOption([]const u8, "id", if (test_root) |p| b.fmt("{s}/id", .{p}) else "/usr/bin/id");
+        dsm.root_module.addOptions("dsm_options", dsm_opts);
+        b.installArtifact(dsm);
+    }
+
     const version_module = b.createModule(.{
         .root_source_file = b.path("src/version.zig"),
         .target = target,

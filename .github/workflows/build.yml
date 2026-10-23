@@ -22,6 +22,41 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - run: sh -n install.sh
       - run: python3 scripts/test_installers.py
+      - name: Test DSM package format and lifecycle
+        run: python3 scripts/test_synology.py -v
+
+  synology-package:
+    name: DSM 7 packages (experimental)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: komari-agent-linux-*
+          path: binaries
+          merge-multiple: true
+      - name: Package static Linux agents
+        run: |
+          set -eu
+          for arch in amd64 arm64 arm; do
+            python3 scripts/build_synology_spk.py --binary "binaries/komari-agent-linux-$arch" \
+              --cgi "binaries/komari-dsm-api-linux-$arch.cgi" --arch "$arch" --version dev --build-number "${{ github.run_number }}" --output-dir dist
+          done
+      - name: Test lifecycle with the real amd64 agent
+        env:
+          KOMARI_TEST_AGENT: binaries/komari-agent-linux-amd64
+          KOMARI_TEST_CGI: binaries/komari-dsm-api-linux-amd64.cgi
+        run: python3 scripts/test_synology.py -v
+      - name: Install Zig for isolated DSM API tests
+        run: bash scripts/install_zig_ci.sh "zig-x86_64-linux-${ZIG_VERSION}.tar.xz" "${ZIG_SHA256}"
+      - name: Test DSM authentication and configuration recovery
+        run: python3 scripts/test_synology_ui.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: komari-agent-dsm7-experimental
+          path: dist/*.spk
+          if-no-files-found: error
 
   native-test:
     name: Test (${{ matrix.os }})
@@ -384,8 +419,15 @@ jobs:
       - name: Build
         run: |
           set -eu
-          zig build -Doptimize=ReleaseSmall -Dversion=dev -Dtarget=${{ matrix.target }}
+          dsm_flags=""
+          if [ "${{ matrix.os }}" = linux ]; then
+            case "${{ matrix.arch }}" in amd64|arm64|arm) dsm_flags="-Ddsm-ui=true" ;; esac
+          fi
+          zig build -Doptimize=ReleaseSmall -Dversion=dev -Dtarget=${{ matrix.target }} $dsm_flags
           mkdir -p dist
+          if [ -n "$dsm_flags" ]; then
+            cp zig-out/bin/komari-dsm-api.cgi "dist/komari-dsm-api-linux-${{ matrix.arch }}.cgi"
+          fi
           binary="komari-agent"
           asset="komari-agent-${{ matrix.os }}-${{ matrix.arch }}"
           if [ "${{ matrix.os }}" = "windows" ]; then
@@ -396,5 +438,5 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: komari-agent-${{ matrix.os }}-${{ matrix.arch }}
-          path: dist/komari-agent-${{ matrix.os }}-${{ matrix.arch }}*
+          path: dist/*
           if-no-files-found: error

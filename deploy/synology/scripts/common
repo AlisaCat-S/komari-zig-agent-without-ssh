@@ -1,0 +1,53 @@
+#!/bin/sh
+# DSM supplies these paths and owns their creation and package-user permissions.
+set -eu
+umask 077
+PKGDEST=${SYNOPKG_PKGDEST:?missing SYNOPKG_PKGDEST}
+PKGVAR=${SYNOPKG_PKGVAR:?missing SYNOPKG_PKGVAR}
+PKGTMP=${SYNOPKG_PKGTMP:?missing SYNOPKG_PKGTMP}
+CONFIG="$PKGVAR/config.json"
+BINARY="$PKGDEST/bin/komari-agent"
+PIDFILE="$PKGTMP/agent.pid"
+LOGFILE="$PKGTMP/agent.log"
+
+fail() {
+    printf '%s\n' "$*" >&2
+    if [ -n "${SYNOPKG_TEMP_LOGFILE:-}" ]; then
+        printf '%s\n' "$*" > "$SYNOPKG_TEMP_LOGFILE"
+    fi
+    exit 1
+}
+
+validate_settings() {
+    case "${wizard_endpoint:-}" in
+        http://?*|https://?*) ;;
+        *) fail 'Panel URL must start with http:// or https://.' ;;
+    esac
+    case "$wizard_endpoint" in
+        *[[:space:]]*) fail 'Panel URL must not contain whitespace.' ;;
+    esac
+    [ -n "${wizard_token:-}" ] || fail 'An agent token is required.'
+    printf '%s' "${wizard_interval:-}" | grep -Eq '^[1-9][0-9]*$' ||
+        fail 'Reporting interval must be a whole number of seconds (1-86400).'
+    [ "${#wizard_interval}" -le 5 ] && [ "$wizard_interval" -le 86400 ] ||
+        fail 'Reporting interval must be a whole number of seconds (1-86400).'
+}
+
+# Match both executable and process birth time before signalling: never kill a reused PID.
+process_matches() {
+    [ -r "/proc/$PID/stat" ] || return 1
+    executable=$(readlink "/proc/$PID/exe" 2>/dev/null) || return 1
+    [ "$executable" = "$BINARY_REAL" ] || [ "$executable" = "$BINARY_REAL (deleted)" ] || return 1
+    process_stat=$(sed 's/^.*) //' "/proc/$PID/stat") || return 1
+    process_state=$(printf '%s\n' "$process_stat" | awk '{print $1}')
+    process_birth=$(printf '%s\n' "$process_stat" | awk '{print $20}')
+    [ "$process_state" != Z ] && [ "$process_birth" = "$BIRTH" ]
+}
+
+running() {
+    [ -r "$PIDFILE" ] || return 1
+    IFS=' ' read -r PID BIRTH < "$PIDFILE" || return 1
+    case "$PID:$BIRTH" in *[!0-9:]*|:*|*:) return 1 ;; esac
+    [ "$PID" -gt 1 ] || return 1
+    process_matches
+}

@@ -1,0 +1,12 @@
+{
+  ".url": {
+    "com.komari.monitor": {
+      "type": "url",
+      "title": "Komari Monitor",
+      "desc": "连接状态与监控配置",
+      "icon": "images/icon_{0}.png",
+      "url": "/webman/3rdparty/komari-agent/index.html",
+      "allUsers": false
+    }
+  }
+}
